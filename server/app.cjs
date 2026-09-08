@@ -40,8 +40,9 @@ app.post('/api/auth/admin/signup', requireDatabase, async (req, res) => {
     const token = crypto.randomBytes(32).toString('hex')
     const user = await client.query('insert into users (org_id, role, full_name, email, password_hash, is_active, setup_status, email_verified, email_confirmation_token) values ($1, $2, $3, lower($4), $5, true, $6, false, $7) returning id, org_id, role, full_name, email, is_active, setup_status, created_at', [org.rows[0].id, 'admin', fullName.trim(), email.trim(), passwordHash, 'setup_complete', token])
     await client.query('COMMIT')
-    const url = `${process.env.PUBLIC_API_URL || `http://localhost:${port}`}/api/auth/confirm-email?token=${token}`
-    sendMail(email, 'Confirm your StockCount admin email', `Confirm your StockCount email by opening this link:\n\n${url}\n\nThis link can only be used once.`).catch(() => {})
+    const baseUrl = process.env.PUBLIC_API_URL || `${req.protocol}://${req.get('host')}`
+    const url = `${baseUrl.replace(/\/$/, '')}/api/auth/confirm-email?token=${token}`
+    await sendMail(email, 'Confirm your StockCount admin email', `Confirm your StockCount email by opening this link:\n\n${url}\n\nThis link can only be used once.`)
     res.status(201).json({ requiresConfirmation: true, email: email.trim() })
   } catch (error) { await client.query('ROLLBACK'); res.status(400).json({ error: error.message }) } finally { client.release() }
 })
