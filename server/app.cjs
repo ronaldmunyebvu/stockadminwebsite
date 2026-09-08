@@ -77,5 +77,9 @@ app.get('/api/mobile/items/barcode/:barcode', requireDatabase, auth, async (req,
 app.get('/api/mobile/audit-logs', requireDatabase, auth, async (req, res) => { const result = await pool.query('select * from audit_logs where org_id=$1 order by created_at desc limit 100', [req.user.orgId]); res.json(result.rows) })
 app.post('/api/mobile/audit-logs', requireDatabase, auth, async (req, res) => { const { entityType, entityId, note } = req.body; const result = await pool.query('insert into audit_logs (org_id,entity_type,entity_id,action,actor_id,payload) values ($1,$2,$3,$4,$5,$6) returning *', [req.user.orgId, entityType, entityId, 'note', req.user.id, JSON.stringify({ note })]); res.status(201).json(result.rows[0]) })
 
+app.use((err, req, res, next) => {
+  res.status(err.status || (err.type && 400) || 500).json({ diagnostic: true, message: err.message, type: err.type, status: err.status, body: req.body, hasBodyGetter: 'body' in req })
+})
+
 module.exports = app
 function publicUser(user) { return { id: user.id, org_id: user.org_id, role: user.role, full_name: user.full_name, email: user.email, phone: user.phone, is_active: user.is_active, setup_status: user.setup_status, created_at: user.created_at } }
