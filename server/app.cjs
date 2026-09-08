@@ -31,20 +31,32 @@ app.post('/api/auth/admin/signup', requireDatabase, async (req, res) => {
   const { shopName, fullName, email, password } = req.body
   if (!shopName || !fullName || !email || !password || password.length < 6) return res.status(400).json({ error: 'Shop, name, email, and a password of at least 6 characters are required' })
   const client = await pool.connect()
+  let transactionActive = false
   try {
     await client.query('BEGIN')
+    transactionActive = true
     const existing = await client.query('select id from users where lower(email) = lower($1)', [email.trim()])
     if (existing.rowCount) throw new Error('Email already exists')
-    const org = await client.query('insert into organizations (name) values ($1) returning *', [shopName.trim()])
+    const existingOrg = await client.query('select id from organizations where lower(name) = lower($1) for update', [shopName.trim()])
+    let organizationId
+    if (existingOrg.rowCount) {
+      const members = await client.query('select count(*)::int as count from users where org_id=$1', [existingOrg.rows[0].id])
+      if (members.rows[0].count > 0) throw new Error('A workspace with that name already exists. Choose a different shop name.')
+      organizationId = existingOrg.rows[0].id
+    } else {
+      const org = await client.query('insert into organizations (name) values ($1) returning id', [shopName.trim()])
+      organizationId = org.rows[0].id
+    }
     const passwordHash = await bcrypt.hash(password, 12)
     const token = crypto.randomBytes(32).toString('hex')
-    const user = await client.query('insert into users (org_id, role, full_name, email, password_hash, is_active, setup_status, email_verified, email_confirmation_token) values ($1, $2, $3, lower($4), $5, true, $6, false, $7) returning id, org_id, role, full_name, email, is_active, setup_status, created_at', [org.rows[0].id, 'admin', fullName.trim(), email.trim(), passwordHash, 'setup_complete', token])
+    await client.query('insert into users (org_id, role, full_name, email, password_hash, is_active, setup_status, email_verified, email_confirmation_token) values ($1, $2, $3, lower($4), $5, true, $6, false, $7)', [organizationId, 'admin', fullName.trim(), email.trim(), passwordHash, 'setup_complete', token])
     await client.query('COMMIT')
+    transactionActive = false
     const baseUrl = process.env.PUBLIC_API_URL || `${req.protocol}://${req.get('host')}`
     const url = `${baseUrl.replace(/\/$/, '')}/api/auth/confirm-email?token=${token}`
     await sendMail(email, 'Confirm your StockCount admin email', `Confirm your StockCount email by opening this link:\n\n${url}\n\nThis link can only be used once.`)
     res.status(201).json({ requiresConfirmation: true, email: email.trim() })
-  } catch (error) { await client.query('ROLLBACK'); res.status(400).json({ error: error.message }) } finally { client.release() }
+  } catch (error) { if (transactionActive) await client.query('ROLLBACK'); const message = error.code === '23505' ? 'A workspace or email with those details already exists.' : error.message; res.status(400).json({ error: message }) } finally { client.release() }
 })
 app.get('/api/auth/confirm-email', async (req, res) => { if (!pool) return res.status(503).send('Database is not configured'); const result = await pool.query('update users set email_verified = true, email_confirmation_token = null where email_confirmation_token = $1 returning email', [req.query.token]); if (!result.rowCount) return res.status(400).send('This confirmation link is invalid or expired.'); res.send('Email confirmed. You can return to StockCount and sign in.') })
 app.post('/api/auth/login', requireDatabase, async (req, res) => { const { email, password, role } = req.body; const result = await pool.query('select * from users where lower(email) = lower($1) and is_active = true', [email]); const user = result.rows[0]; if (!user || (role && user.role !== role) || !user.password_hash || !(await bcrypt.compare(password, user.password_hash))) return res.status(401).json({ error: 'Invalid credentials' }); if (!user.email_verified) return res.status(403).json({ error: 'Confirm your email before signing in' }); res.json({ token: issueToken(user), user: publicUser(user) }) })
