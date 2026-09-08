@@ -1,7 +1,7 @@
 import { demoData } from './data'
 import type { AdminData, CountSession, Item, Location, User, Zone } from './types'
 
-const configuredUrl = (import.meta.env.VITE_API_URL as string | undefined)?.replace(/\/$/, '')
+const configuredUrl = (import.meta.env.VITE_API_URL as string | undefined)?.trim().replace(/\/+$/, '').replace(/\/api$/, '')
 export const apiUrl = configuredUrl || '/api'
 export const isNeonConfigured = true
 

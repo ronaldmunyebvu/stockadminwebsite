@@ -35,7 +35,7 @@ PUBLIC_API_URL=http://localhost:8787
    - `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURE`, `SMTP_USER`, `SMTP_APP_PASSWORD`, `SMTP_FROM` — email sender (Gmail App Password recommended)
    - `PUBLIC_API_URL` — your deployed domain, e.g. `https://your-app.vercel.app` (used in email confirmation links)
 4. Vercel runs `npm run build` (Vite → `dist`) and serves it as static content. The `api/index.cjs` file becomes a serverless function mounted at `/api/*`, so the frontend talks to the database through the same origin — no "failed to fetch" cross-origin issues.
-5. Optional: leave `VITE_API_URL` **empty** so the frontend uses the same-origin `/api` route.
+5. Leave `VITE_API_URL` **empty** so the frontend uses the same-origin `/api` route. If you set it, use only an API origin such as `https://api.example.com`; do not include a trailing `/api` because the frontend adds that path automatically.
 
 ## Database
 
