@@ -152,6 +152,7 @@ type ParsedSheet = {
   columns: string[]
   rows: SheetPreviewRow[]
   products: ImportRow[]
+  quantityColumns: string[]
 }
 
 function normalizeHeader(value: string) {
@@ -199,7 +200,12 @@ async function parseImportedSpreadsheet(file: File, existingItems: AdminData['it
   const barcodeAliases = new Set(['barcode', 'upc', 'ean', 'gtin'])
   const unitAliases = new Set(['unit', 'uom', 'unitofmeasure', 'measure', 'unitofmeasurement'])
   const categoryAliases = new Set(['category', 'department', 'group', 'class', 'brand'])
-  const qtyAliases = new Set(['quantity', 'qty', 'stock', 'stockqty', 'onhand', 'systemqty', 'unitsinstock', 'inventoryqty'])
+  const qtyAliases = new Set(['quantity', 'qty', 'stock', 'stockqty', 'onhand', 'systemqty', 'unitsinstock', 'inventoryqty', 'totalquantity', 'totalunit', 'totalunits'])
+  const quantityColumns = headers.filter(header => {
+    const normalizedHeader = normalizeHeader(header)
+    return qtyAliases.has(normalizedHeader) || [...qtyAliases].some(alias => normalizedHeader.includes(alias) || alias.includes(normalizedHeader))
+  })
+  const quantityHeader = quantityColumns.length === 1 ? quantityColumns[0] : undefined
 
   const products = rows
     .map(row => {
@@ -208,7 +214,8 @@ async function parseImportedSpreadsheet(file: File, existingItems: AdminData['it
       const barcode = readSpreadsheetCell(row, barcodeAliases)
       const unit = readSpreadsheetCell(row, unitAliases) || 'unit'
       const category = readSpreadsheetCell(row, categoryAliases) || undefined
-      const system_qty = Number(String(readSpreadsheetCell(row, qtyAliases)).replace(/[^0-9.-]/g, '')) || 0
+      const quantityValue = quantityHeader ? row[quantityHeader] : readSpreadsheetCell(row, qtyAliases)
+      const system_qty = Number(String(quantityValue ?? '').replace(/[^0-9.-]/g, '')) || 0
       return { name: String(name ?? '').trim(), sku: String(sku ?? '').trim(), barcode: barcode ? String(barcode).trim() : undefined, unit: String(unit).trim() || 'unit', category: category ? String(category).trim() : undefined, system_qty }
     })
     .filter(product => product.name && product.sku)
@@ -224,7 +231,7 @@ async function parseImportedSpreadsheet(file: File, existingItems: AdminData['it
   })
   if (duplicates.length) throw new Error(`Duplicate SKU found: ${duplicates[0].sku}`)
 
-  return { fileName: file.name, columns: headers, rows, products }
+  return { fileName: file.name, columns: headers, rows, products, quantityColumns }
 }
 
 function ImportDialog({ data, onClose, onCreated }: { data: AdminData; onClose: () => void; onCreated: (items: AdminData['items']) => void }) {
@@ -234,6 +241,7 @@ function ImportDialog({ data, onClose, onCreated }: { data: AdminData; onClose: 
   const [fileName, setFileName] = useState('')
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
+  const [quantityHeader, setQuantityHeader] = useState('')
   const hasZones = data.zones.length > 0
   const readFile = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0]
@@ -244,11 +252,12 @@ function ImportDialog({ data, onClose, onCreated }: { data: AdminData; onClose: 
       const parsed = await parseImportedSpreadsheet(file, data.items)
       setFileName(parsed.fileName)
       setSheet(parsed)
+      setQuantityHeader(parsed.quantityColumns.length === 1 ? parsed.quantityColumns[0] : '')
       setRows(parsed.products)
     } catch (err) { setError(err instanceof Error ? err.message : 'Unable to read spreadsheet') }
   }
   const submit = async (event: FormEvent) => { event.preventDefault(); if (!rows.length || !zoneId) return; setBusy(true); setError(''); try { const items = await createItems(data.org.id, rows.map(row => ({ ...row, zone_id: zoneId }))); if (sheet) { try { await createExcelUpload(data.org.id, { fileName: sheet.fileName, columns: sheet.columns, rowsPreview: sheet.rows.slice(0, 50), importedCount: items.length, zoneId, rawData: sheet.rows }) } catch { /* best-effort upload save */ } } onCreated(items as AdminData['items']) } catch (err) { setError(err instanceof Error ? err.message : 'Unable to import products') } finally { setBusy(false) } }
-  return <Dialog title="Import products" description="Upload an Excel or CSV file. Products will appear in Inventory and can then be selected when scheduling a count." onClose={onClose}><form className="dialog-form" onSubmit={submit}><div className="upload-dropzone"><Download size={22} /><strong>{fileName || 'Choose a spreadsheet'}</strong><small>Accepted: .xlsx, .xls, .csv. Required columns: Name and SKU.</small><label className="button button-secondary upload-button">Browse file<input type="file" accept=".xlsx,.xls,.csv" onChange={readFile} /></label></div>{!hasZones && <div className="auth-error">This workspace has no zones yet. Create a Location and a Zone in the Locations page first, then the import button will become available.</div>}{sheet && <>{hasZones && <label>Import all products into zone<select value={zoneId} onChange={event => setZoneId(event.target.value)} required>{data.zones.map(zone => <option key={zone.id} value={zone.id}>{zone.name}</option>)}</select></label>}<div className="import-preview"><div className="selection-heading selection-heading-import"><span>Imported sheet preview</span><small>{rows.length} products captured</small></div><div className="table-scroll"><table><thead><tr>{sheet.columns.map(column => <th key={column}>{column}</th>)}</tr></thead><tbody>{sheet.rows.slice(0, 25).map((row, index) => <tr key={`${fileName}-${index}`}>{sheet.columns.map(column => <td key={`${column}-${index}`}>{row[column] || '—'}</td>)}</tr>)}</tbody></table></div></div></>}{error && <div className="auth-error">{error}</div>}<div className="dialog-actions"><button type="button" className="button button-quiet" onClick={onClose}>Cancel</button><button type="submit" className="button button-primary" disabled={busy || !rows.length || !zoneId}>{busy ? 'Importing...' : `Import ${rows.length || ''} products`}</button></div></form></Dialog>
+  return <Dialog title="Import products" description="Upload an Excel or CSV file. Products will appear in Inventory and can then be selected when scheduling a count." onClose={onClose}><form className="dialog-form" onSubmit={submit}><div className="upload-dropzone"><Download size={22} /><strong>{fileName || 'Choose a spreadsheet'}</strong><small>Accepted: .xlsx, .xls, .csv. Required columns: Name and SKU.</small><label className="button button-secondary upload-button">Browse file<input type="file" accept=".xlsx,.xls,.csv" onChange={readFile} /></label></div>{!hasZones && <div className="auth-error">This workspace has no zones yet. Create a Location and a Zone in the Locations page first, then the import button will become available.</div>}{sheet && <>{hasZones && <label>Import all products into zone<select value={zoneId} onChange={event => setZoneId(event.target.value)} required>{data.zones.map(zone => <option key={zone.id} value={zone.id}>{zone.name}</option>)}</select></label>}<label>System quantity column<select value={quantityHeader} onChange={event => { setQuantityHeader(event.target.value); const selected = event.target.value; setRows(sheet.rows.map(row => ({ name: String(readSpreadsheetCell(row, NAME_COLUMN_ALIASES) ?? '').trim(), sku: String(readSpreadsheetCell(row, SKU_COLUMN_ALIASES) ?? '').trim(), barcode: String(readSpreadsheetCell(row, new Set(['barcode', 'upc', 'ean', 'gtin'])) || '').trim() || undefined, unit: String(readSpreadsheetCell(row, new Set(['unit', 'uom', 'unitofmeasure', 'measure', 'unitofmeasurement'])) || 'unit').trim(), category: String(readSpreadsheetCell(row, new Set(['category', 'department', 'group', 'class', 'brand'])) || '').trim() || undefined, system_qty: Number(String(row[selected] ?? '').replace(/[^0-9.-]/g, '')) || 0 })).filter(product => product.name && product.sku)) }} required><option value="">Choose the column containing system quantity</option>{sheet.columns.map(column => <option key={column} value={column}>{column}</option>)}</select><small>Choose the uploaded header that contains the expected stock quantity, such as Qty on Hand or Total Quantity.</small></label><div className="import-preview"><div className="selection-heading selection-heading-import"><span>Imported sheet preview</span><small>{rows.length} products captured</small></div><div className="table-scroll"><table><thead><tr>{sheet.columns.map(column => <th key={column}>{column}</th>)}</tr></thead><tbody>{sheet.rows.slice(0, 25).map((row, index) => <tr key={`${fileName}-${index}`}>{sheet.columns.map(column => <td key={`${column}-${index}`}>{row[column] || '—'}</td>)}</tr>)}</tbody></table></div></div></>}{error && <div className="auth-error">{error}</div>}<div className="dialog-actions"><button type="button" className="button button-quiet" onClick={onClose}>Cancel</button><button type="submit" className="button button-primary" disabled={busy || !rows.length || !zoneId || !quantityHeader}>{busy ? 'Importing...' : `Import ${rows.length || ''} products`}</button></div></form></Dialog>
 }
 
 function ScheduleDialog({ data, onClose, onCreated }: { data: AdminData; onClose: () => void; onCreated: (sessions: AdminData['sessions']) => void }) {
