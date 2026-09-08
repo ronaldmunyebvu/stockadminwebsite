@@ -1,7 +1,8 @@
-require('dotenv').config()
-const app = require('../server/app.cjs')
+import app from '../server/app.cjs'
 
-module.exports = function handler(req, res, next) {
+export const config = { runtime: 'nodejs' }
+
+export default function handler(req, res, next) {
   if (!req.url.startsWith('/api')) {
     const original = req.url
     req.url = '/api' + original
