@@ -153,6 +153,7 @@ type ParsedSheet = {
   rows: SheetPreviewRow[]
   products: ImportRow[]
   quantityColumns: string[]
+  defaultQuantityHeader: string
 }
 
 function normalizeHeader(value: string) {
@@ -205,7 +206,7 @@ async function parseImportedSpreadsheet(file: File, existingItems: AdminData['it
     const normalizedHeader = normalizeHeader(header)
     return qtyAliases.has(normalizedHeader) || [...qtyAliases].some(alias => normalizedHeader.includes(alias) || alias.includes(normalizedHeader))
   })
-  const quantityHeader = quantityColumns.length === 1 ? quantityColumns[0] : undefined
+  const quantityHeader = pickQuantityColumn(rows, quantityColumns)
 
   const products = rows
     .map(row => {
@@ -231,7 +232,19 @@ async function parseImportedSpreadsheet(file: File, existingItems: AdminData['it
   })
   if (duplicates.length) throw new Error(`Duplicate SKU found: ${duplicates[0].sku}`)
 
-  return { fileName: file.name, columns: headers, rows, products, quantityColumns }
+  const defaultQuantityHeader = pickQuantityColumn(rows, quantityColumns)
+  return { fileName: file.name, columns: headers, rows, products, quantityColumns, defaultQuantityHeader }
+}
+
+function pickQuantityColumn(rows: SheetPreviewRow[], quantityColumns: string[]) {
+  if (quantityColumns.length === 1) return quantityColumns[0]
+  let best = ''
+  let bestScore = -1
+  for (const header of quantityColumns) {
+    const score = rows.reduce((sum, row) => sum + (Number(String(row[header] ?? '').replace(/[^0-9.-]/g, '')) > 0 ? 1 : 0), 0)
+    if (score > bestScore) { bestScore = score; best = header }
+  }
+  return best
 }
 
 function ImportDialog({ data, onClose, onCreated }: { data: AdminData; onClose: () => void; onCreated: (items: AdminData['items']) => void }) {
@@ -252,7 +265,7 @@ function ImportDialog({ data, onClose, onCreated }: { data: AdminData; onClose: 
       const parsed = await parseImportedSpreadsheet(file, data.items)
       setFileName(parsed.fileName)
       setSheet(parsed)
-      setQuantityHeader(parsed.quantityColumns.length === 1 ? parsed.quantityColumns[0] : '')
+      setQuantityHeader(parsed.defaultQuantityHeader)
       setRows(parsed.products)
     } catch (err) { setError(err instanceof Error ? err.message : 'Unable to read spreadsheet') }
   }
