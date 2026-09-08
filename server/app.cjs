@@ -13,7 +13,7 @@ const jwtSecret = process.env.JWT_SECRET || 'change-this-secret'
 const pool = process.env.DATABASE_URL ? new Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false } }) : null
 if (pool && !process.env.VERCEL) setInterval(() => { pool.query('SELECT 1').catch(() => {}) }, 60000)
 app.use(cors({ origin: true, credentials: true }))
-app.use(express.json({ limit: '5mb' }))
+app.use((req, res, next) => (req.body ? next() : express.json({ limit: '5mb' })(req, res, next)))
 
 function requireDatabase(req, res, next) { if (!pool) return res.status(503).json({ error: 'DATABASE_URL is not configured on the server' }); next() }
 function issueToken(user) { return jwt.sign({ id: user.id, orgId: user.org_id, role: user.role, email: user.email }, jwtSecret, { expiresIn: '12h' }) }
