@@ -8,7 +8,7 @@ export const isNeonConfigured = true
 function token() { return localStorage.getItem('stockcount_admin_token') }
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   if (!apiUrl) throw new Error('VITE_API_URL is not configured')
-  const response = await fetch(`${apiUrl}${path}`, { ...options, headers: { 'Content-Type': 'application/json', ...(token() ? { Authorization: `Bearer ${token()}` } : {}), ...options.headers } })
+  const response = await fetch(apiUrl === '/api' ? path : `${apiUrl}${path}`, { ...options, headers: { 'Content-Type': 'application/json', ...(token() ? { Authorization: `Bearer ${token()}` } : {}), ...options.headers } })
   const text = await response.text()
   let body: Record<string, unknown>
   try { body = text ? JSON.parse(text) : {} } catch { body = { error: text ? `${text} (${response.status})` : `Request failed (${response.status})` } }
