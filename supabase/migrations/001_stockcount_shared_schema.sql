@@ -82,7 +82,7 @@ create table if not exists public.count_entries (
   counted_qty numeric not null,
   system_qty numeric not null,
   variance numeric not null,
-  counted_by uuid not null references public.users(id) on delete restrict,
+  counted_by uuid references public.users(id) on delete set null,
   device_id text,
   gps_lat numeric,
   gps_lon numeric,
