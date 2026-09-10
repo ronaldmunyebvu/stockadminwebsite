@@ -58,8 +58,8 @@ create table if not exists public.items (
 create table if not exists public.count_sessions (
   id uuid primary key default gen_random_uuid(),
   org_id uuid not null references public.organizations(id) on delete cascade,
-  location_id uuid not null references public.locations(id) on delete restrict,
-  zone_id uuid references public.zones(id) on delete restrict,
+  location_id uuid references public.locations(id) on delete set null,
+  zone_id uuid references public.zones(id) on delete set null,
   name text not null,
   status text not null default 'draft' check (status in ('draft','in_progress','submitted','under_review','approved','rejected','recount_assigned')),
   mode text not null check (mode in ('blind','visible','double')),
