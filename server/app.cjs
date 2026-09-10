@@ -12,6 +12,8 @@ const port = Number(process.env.PORT || 8787)
 const jwtSecret = process.env.JWT_SECRET || 'change-this-secret'
 const pool = process.env.DATABASE_URL ? new Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false } }) : null
 if (pool && !process.env.VERCEL) setInterval(() => { pool.query('SELECT 1').catch(() => {}) }, 60000)
+async function runMigrations() { if (!pool) return; try { await pool.query('ALTER TABLE count_sessions ALTER COLUMN location_id DROP NOT NULL'); console.log('Migration: location_id is now nullable on count_sessions') } catch (err) { if (err.code !== '42710' && err.code !== 'P0001') console.error('Migration error:', err.message) } }
+runMigrations()
 app.use(cors({ origin: true, credentials: true }))
 app.use((req, res, next) => (req.body ? next() : express.json({ limit: '5mb' })(req, res, next)))
 
