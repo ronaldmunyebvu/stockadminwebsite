@@ -4,7 +4,7 @@ import { approveSession, createExcelUpload, createItem, createItems, createLocat
 import * as XLSX from 'xlsx'
 import type { AdminData, CountEntry, CountReport, SessionStatus, UserRole } from './types'
 
-const statusLabels: Record<SessionStatus, string> = { draft: 'Draft', in_progress: 'Counting', submitted: 'Submitted', under_review: 'Needs review', approved: 'Approved', rejected: 'Rejected', recount_assigned: 'Recount' }
+const statusLabels: Record<SessionStatus, string> = { draft: 'Draft', in_progress: 'Counting', submitted: 'Submitted', submitted_to_admin: 'Awaiting review', under_review: 'Needs review', approved: 'Approved', rejected: 'Rejected', recount_assigned: 'Recount' }
 const roleLabels: Record<UserRole, string> = { admin: 'Admin', counter: 'Counter', auditor: 'Auditor' }
 const nav = [
   { id: 'overview', label: 'Overview', icon: LayoutDashboard },
@@ -78,11 +78,12 @@ export default function App() {
 }
 
 function Overview({ data, onNavigate }: { data: AdminData; onNavigate: (page: string) => void }) {
-  const active = data.sessions.filter(session => ['in_progress', 'under_review', 'submitted'].includes(session.status)).length
+  const active = data.sessions.filter(session => ['in_progress', 'under_review', 'submitted', 'submitted_to_admin'].includes(session.status)).length
   const reviewed = data.sessions.filter(session => session.status === 'approved').length
+  const awaitingReview = data.sessions.filter(s => s.status === 'under_review' || s.status === 'submitted_to_admin').length
   const stockValue = data.items.reduce((sum, item) => sum + Number(item.system_qty || 0), 0)
   return <div className="content-stack"><section className="welcome-banner"><div><span className="banner-kicker"><span className="status-dot" />Workspace health</span><h2>Your inventory, at a glance.</h2><p>Keep counts moving and catch variances before they become expensive.</p></div><div className="banner-art"><div className="art-ring ring-one" /><div className="art-ring ring-two" /><Boxes size={66} strokeWidth={1.1} /></div></section>
-    <section className="stat-grid"><StatCard label="Items in catalogue" value={data.items.length.toString()} detail="Across 3 active zones" icon={Package} tone="mint" /><StatCard label="Active counts" value={active.toString()} detail={`${data.sessions.filter(s => s.status === 'under_review').length} need review`} icon={ClipboardList} tone="yellow" /><StatCard label="Approved counts" value={reviewed.toString()} detail="This counting cycle" icon={ShieldCheck} tone="blue" /><StatCard label="Units on hand" value={stockValue === 0 ? '00' : stockValue.toLocaleString()} detail="System quantity" icon={Archive} tone="peach" /></section>
+    <section className="stat-grid"><StatCard label="Items in catalogue" value={data.items.length.toString()} detail="Across 3 active zones" icon={Package} tone="mint" /><StatCard label="Active counts" value={active.toString()} detail={`${awaitingReview} await review`} icon={ClipboardList} tone="yellow" /><StatCard label="Approved counts" value={reviewed.toString()} detail="This counting cycle" icon={ShieldCheck} tone="blue" /><StatCard label="Units on hand" value={stockValue === 0 ? '00' : stockValue.toLocaleString()} detail="System quantity" icon={Archive} tone="peach" /></section>
     <div className="two-column"><section className="panel panel-large"><div className="panel-header"><div><p className="panel-kicker">Keep an eye on this</p><h3>Count sessions</h3></div><button className="text-button" onClick={() => onNavigate('sessions')}>View all <ArrowUpRight size={15} /></button></div><div className="session-list">{data.sessions.slice(0, 4).map(session => <SessionRow key={session.id} session={session} data={data} />)}</div></section><section className="panel"><div className="panel-header"><div><p className="panel-kicker">Your workspace</p><h3>Team pulse</h3></div><button className="icon-button"><SlidersHorizontal size={17} /></button></div><div className="team-pulse"><div className="pulse-number">{data.users.filter(user => user.is_active).length}<span> active teammates</span></div><div className="role-bar"><span style={{ width: `${data.users.filter(user => user.role === 'counter').length / data.users.length * 100}%` }} /><span style={{ width: `${data.users.filter(user => user.role === 'auditor').length / data.users.length * 100}%` }} /><span style={{ width: `${data.users.filter(user => user.role === 'admin').length / data.users.length * 100}%` }} /></div><div className="legend"><span><i className="dot dot-green" />Counters <b>{data.users.filter(user => user.role === 'counter').length}</b></span><span><i className="dot dot-blue" />Auditors <b>{data.users.filter(user => user.role === 'auditor').length}</b></span><span><i className="dot dot-dark" />Admins <b>{data.users.filter(user => user.role === 'admin').length}</b></span></div></div><div className="mini-callout"><Wifi size={16} /><span><strong>All systems operational</strong><small>Last sync just now</small></span></div></section></div>
     <section className="panel activity-panel"><div className="panel-header"><div><p className="panel-kicker">Recent changes</p><h3>Activity log</h3></div><button className="text-button" onClick={() => onNavigate('activity')}>See activity <ArrowUpRight size={15} /></button></div><ActivityList data={data} limit={4} /></section>
   </div>
@@ -95,7 +96,7 @@ function Inventory({ data, query, setQuery }: { data: AdminData; query: string; 
 
 function Sessions({ data, query, setQuery, onSelect, onDelete }: { data: AdminData; query: string; setQuery: (value: string) => void; onSelect: (id: string) => void; onDelete: (id: string) => void }) {
   const filtered = data.sessions.filter(session => `${session.name} ${statusLabels[session.status]}`.toLowerCase().includes(query.toLowerCase()))
-  return <div className="content-stack"><section className="filter-bar"><div className="search-box"><Search size={17} /><input value={query} onChange={event => setQuery(event.target.value)} placeholder="Search count sessions" /></div><button className="filter-button"><SlidersHorizontal size={16} />All statuses <ChevronDown size={14} /></button><span className="result-count">{filtered.length} sessions</span></section><section className="panel table-panel"><div className="table-toolbar"><div><p className="panel-kicker">Inventory control</p><h3>All count sessions</h3></div><div className="session-summary"><span className="status-dot" />{data.sessions.filter(s => s.status === 'under_review').length} awaiting review</div></div><div className="table-scroll"><table><thead><tr><th>Session</th><th>Status</th><th>Location</th><th>Assigned to</th><th>Started</th><th /></tr></thead><tbody>{filtered.map(session => <tr key={session.id} style={{ cursor: 'pointer' }} onClick={() => onSelect(session.id)}><td><strong>{session.name}</strong><small className="table-sub">{session.mode} count</small></td><td><div className={`status-pill status-${session.status}`}><span />{statusLabels[session.status]}</div></td><td className="muted">{locationName(session.location_id, data)}<small className="table-sub">{zoneName(session.zone_id, data)}</small></td><td><div className="person-cell"><div className="avatar avatar-small">{initials(displayName(session.assigned_counter_id, data))}</div>{displayName(session.assigned_counter_id, data)}</div></td><td className="muted">{formatDate(session.created_at)}</td><td onClick={event => event.stopPropagation()}>{session.status !== 'in_progress' && <button className="icon-button" title="Delete session" onClick={() => { if (window.confirm('Are you sure you want to delete this session? This cannot be undone.')) onDelete(session.id) }}><Trash2 size={16} /></button>}</td></tr>)}</tbody></table></div></section></div>
+  return <div className="content-stack"><section className="filter-bar"><div className="search-box"><Search size={17} /><input value={query} onChange={event => setQuery(event.target.value)} placeholder="Search count sessions" /></div><button className="filter-button"><SlidersHorizontal size={16} />All statuses <ChevronDown size={14} /></button><span className="result-count">{filtered.length} sessions</span></section><section className="panel table-panel"><div className="table-toolbar"><div><p className="panel-kicker">Inventory control</p><h3>All count sessions</h3></div><div className="session-summary"><span className="status-dot" />{data.sessions.filter(s => s.status === 'under_review' || s.status === 'submitted_to_admin').length} awaiting review</div></div><div className="table-scroll"><table><thead><tr><th>Session</th><th>Status</th><th>Location</th><th>Assigned to</th><th>Started</th><th /></tr></thead><tbody>{filtered.map(session => <tr key={session.id} style={{ cursor: 'pointer' }} onClick={() => onSelect(session.id)}><td><strong>{session.name}</strong><small className="table-sub">{session.mode} count</small></td><td><div className={`status-pill status-${session.status}`}><span />{statusLabels[session.status]}</div></td><td className="muted">{locationName(session.location_id, data)}<small className="table-sub">{zoneName(session.zone_id, data)}</small></td><td><div className="person-cell"><div className="avatar avatar-small">{initials(displayName(session.assigned_counter_id, data))}</div>{displayName(session.assigned_counter_id, data)}</div></td><td className="muted">{formatDate(session.created_at)}</td><td onClick={event => event.stopPropagation()}>{session.status !== 'in_progress' && <button className="icon-button" title="Delete session" onClick={() => { if (window.confirm('Are you sure you want to delete this session? This cannot be undone.')) onDelete(session.id) }}><Trash2 size={16} /></button>}</td></tr>)}</tbody></table></div></section></div>
 }
 
 function SessionDetail({ sessionId, data, setData, onBack, onNotice }: { sessionId: string; data: AdminData; setData: (data: AdminData) => void; onBack: () => void; onNotice: (msg: string) => void }) {
@@ -110,9 +111,8 @@ function SessionDetail({ sessionId, data, setData, onBack, onNotice }: { session
 
   const session = data.sessions.find(s => s.id === sessionId)
   const isAuditorAssigned = Boolean(session?.auditor_id)
-  const isAdminReviewer = !isAuditorAssigned
-  const canReview = session?.status === 'submitted' && isAdminReviewer
-  const canDelete = session && !['in_progress', 'submitted'].includes(session.status)
+  const canReview = session?.status === 'submitted' || session?.status === 'submitted_to_admin'
+  const canDelete = session && !['in_progress', 'submitted', 'submitted_to_admin'].includes(session.status)
   const hasReport = Boolean(report)
 
   useEffect(() => {
@@ -443,6 +443,7 @@ function ScheduleDialog({ data, onClose, onCreated }: { data: AdminData; onClose
   const [counterIds, setCounterIds] = useState<string[]>([])
   const [mode, setMode] = useState<'blind' | 'visible' | 'double'>('blind')
   const [auditorId, setAuditorId] = useState(data.users.find(user => user.role === 'auditor' && user.is_active)?.id ?? '')
+  const [sampleItemIds, setSampleItemIds] = useState<string[]>([])
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [productSearch, setProductSearch] = useState('')
@@ -452,20 +453,22 @@ function ScheduleDialog({ data, onClose, onCreated }: { data: AdminData; onClose
   const items = allItems.filter(item => `${item.name} ${item.sku} ${item.category || ''}`.toLowerCase().includes(productSearch.toLowerCase()))
   const counters = data.users.filter(user => user.role === 'counter' && user.is_active)
   const auditors = data.users.filter(user => user.role === 'auditor' && user.is_active)
+  const selectedProducts = data.items.filter(item => itemIds.includes(item.id))
+  const allSampleSelected = selectedProducts.length > 0 && selectedProducts.every(item => sampleItemIds.includes(item.id))
   const allVisibleIds = items.map(i => i.id)
   const allSelected = allVisibleIds.length > 0 && allVisibleIds.every(id => itemIds.includes(id))
 
   const toggle = (values: string[], value: string) => values.includes(value) ? values.filter(item => item !== value) : [...values, value]
   const toggleAll = () => { if (allSelected) { setItemIds(prev => prev.filter(id => !allVisibleIds.includes(id))) } else { setItemIds(prev => [...new Set([...prev, ...allVisibleIds])]) } }
 
-  const submit = async (event: FormEvent) => { event.preventDefault(); setBusy(true); setError(''); try { const sessions = await scheduleStockCount(data.org.id, { name, location_id: locationId, zone_id: zoneId, item_ids: itemIds, counter_ids: counterIds, mode, auditor_id: auditorId || undefined }); onCreated(sessions) } catch (err) { setError(err instanceof Error ? err.message : 'Unable to schedule count') } finally { setBusy(false) } }
+  const submit = async (event: FormEvent) => { event.preventDefault(); setBusy(true); setError(''); try { const sessions = await scheduleStockCount(data.org.id, { name, location_id: locationId, zone_id: zoneId, item_ids: itemIds, counter_ids: counterIds, mode, auditor_id: auditorId || undefined, auditor_sample_item_ids: sampleItemIds.length ? sampleItemIds : undefined }); onCreated(sessions) } catch (err) { setError(err instanceof Error ? err.message : 'Unable to schedule count') } finally { setBusy(false) } }
 
   return <Dialog title="Schedule a count" description="Select products and counters. StockCount will split the products between counters automatically so no product is assigned twice." onClose={onClose}>
     <form className="dialog-form schedule-form" onSubmit={submit}>
       <label>Count name<input value={name} onChange={event => setName(event.target.value)} required placeholder="March dry goods cycle" /></label>
       <div className="form-grid">
-        <label>Location<select value={locationId} onChange={event => { setLocationId(event.target.value); setZoneId(''); setItemIds([]); setProductSearch('') }}>{<option value="">All locations</option>}{data.locations.map(location => <option key={location.id} value={location.id}>{location.name}</option>)}</select></label>
-        <label>Zone<select value={zoneId} onChange={event => { setZoneId(event.target.value); setItemIds([]); setProductSearch('') }}>{<option value="">All zones</option>}{zones.map(zone => <option key={zone.id} value={zone.id}>{zone.name}</option>)}</select></label>
+        <label>Location<select value={locationId} onChange={event => { setLocationId(event.target.value); setZoneId(''); setItemIds([]); setSampleItemIds([]); setProductSearch('') }}>{<option value="">All locations</option>}{data.locations.map(location => <option key={location.id} value={location.id}>{location.name}</option>)}</select></label>
+        <label>Zone<select value={zoneId} onChange={event => { setZoneId(event.target.value); setItemIds([]); setSampleItemIds([]); setProductSearch('') }}>{<option value="">All zones</option>}{zones.map(zone => <option key={zone.id} value={zone.id}>{zone.name}</option>)}</select></label>
       </div>
       <div className="selection-section">
         <div className="selection-heading">
@@ -485,9 +488,21 @@ function ScheduleDialog({ data, onClose, onCreated }: { data: AdminData; onClose
       </div>
       <div className="form-grid">
         <label>Count mode<select value={mode} onChange={event => setMode(event.target.value as 'blind' | 'visible' | 'double')}><option value="blind">Blind (counter cannot see system qty)</option><option value="visible">Visible (system qty shown)</option><option value="double">Double count (two counters)</option></select></label>
-        <label>Auditor<select value={auditorId} onChange={event => setAuditorId(event.target.value)}><option value="">No auditor (admin will review)</option>{auditors.map(auditor => <option key={auditor.id} value={auditor.id}>{auditor.full_name}</option>)}</select></label>
+        <label>Auditor<select value={auditorId} onChange={event => { setAuditorId(event.target.value); if (!event.target.value) setSampleItemIds([]) }}><option value="">No auditor (admin will review)</option>{auditors.map(auditor => <option key={auditor.id} value={auditor.id}>{auditor.full_name}</option>)}</select></label>
       </div>
+      {auditorId && (
+        <div className="selection-section">
+          <div className="selection-heading"><span>Auditor sample products</span><small>{sampleItemIds.length} of {selectedProducts.length} selected</small></div>
+          {selectedProducts.length > 0 ? <>
+            <label className="selection-row select-all-row"><input type="checkbox" checked={allSampleSelected} onChange={() => { if (allSampleSelected) setSampleItemIds([]); else setSampleItemIds(selectedProducts.map(item => item.id)) }} /><span><strong>{allSampleSelected ? 'Deselect all' : 'Select all products as samples'}</strong><small>The counter and auditor will count these products together before the auditor leaves</small></span></label>
+            <div className="selection-list">
+              {selectedProducts.map(item => <label className="selection-row product-row" key={item.id}><input type="checkbox" checked={sampleItemIds.includes(item.id)} onChange={() => setSampleItemIds(prev => prev.includes(item.id) ? prev.filter(id => id !== item.id) : [...prev, item.id])} /><div className="product-info"><strong>{item.name}</strong><small><code>{item.sku}</code>{item.category && <span className="product-category">{item.category}</span>}</small></div></label>)}
+            </div>
+          </> : <p className="empty-selection">Select products first, then choose which ones the auditor should sample.</p>}
+        </div>
+      )}
       {!auditorId && counterIds.length > 0 && <div style={{ padding: '0.75rem', background: '#eff6ff', borderRadius: '8px', fontSize: '0.9rem', color: '#1d4ed8' }}>No auditor assigned. The admin will review and approve/reject this session when counters submit it.</div>}
+      {auditorId && !sampleItemIds.length && counterIds.length > 0 && <div style={{ padding: '0.75rem', background: '#fffbeb', border: '1px solid #fde68a', borderRadius: '8px', fontSize: '0.9rem', color: '#92400e' }}>No sample products selected. The auditor will still be assigned but will not verify any products.</div>}
       {error && <div className="auth-error">{error}</div>}
       <div className="dialog-actions"><button type="button" className="button button-quiet" onClick={onClose}>Cancel</button><button className="button button-primary" disabled={busy || !itemIds.length || !counterIds.length}>{busy ? 'Scheduling...' : `Schedule ${itemIds.length || ''} products`}</button></div>
     </form>
