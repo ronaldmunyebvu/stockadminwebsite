@@ -13,6 +13,8 @@ export const demoData: AdminData = {
     { id: 'u3', org_id: 'org-1', full_name: 'Rudo Chirwa', email: 'rudo@newshop.co', role: 'counter', is_active: true, created_at: daysAgo(22) },
     { id: 'u4', org_id: 'org-1', full_name: 'Munashe Dube', email: 'munashe@newshop.co', role: 'auditor', is_active: true, created_at: daysAgo(18) },
     { id: 'u5', org_id: 'org-1', full_name: 'Kuda Sibanda', email: 'kuda@newshop.co', role: 'counter', is_active: false, created_at: daysAgo(12) },
+    { id: 'u6', org_id: 'org-1', full_name: 'Tariro Mbira', email: 'tariro@newshop.co', role: 'seller', is_active: true, created_at: daysAgo(10) },
+    { id: 'u7', org_id: 'org-1', full_name: 'Kudzai Banda', email: 'kudzai@newshop.co', role: 'seller', is_active: true, created_at: daysAgo(8) },
   ],
   locations: [
     { id: 'loc1', org_id: 'org-1', name: 'Central Warehouse', type: 'warehouse', address: '14 Samora Machel Ave' },
@@ -44,5 +46,11 @@ export const demoData: AdminData = {
     { id: 'l2', org_id: 'org-1', entity_type: 'item', entity_id: 'i4', action: 'updated', actor_id: 'u1', created_at: daysAgo(1) },
     { id: 'l3', org_id: 'org-1', entity_type: 'user', entity_id: 'u5', action: 'deactivated', actor_id: 'u1', created_at: daysAgo(2) },
     { id: 'l4', org_id: 'org-1', entity_type: 'session', entity_id: 's1', action: 'submitted', actor_id: 'u2', created_at: daysAgo(0) },
+  ],
+  sales: [
+    { id: 'sale-1', org_id: 'org-1', item_id: 'i6', seller_id: 'u6', quantity: 4, unit_price: 3, total: 12, sold_at: `${today.toISOString().slice(0, 10)}T09:12:00.000Z`, created_at: daysAgo(0), item_name: 'Crisp & Co. Potato Chips', sku: 'CC-CHIPS', item_unit: 'packet', seller_name: 'Tariro Mbira' },
+    { id: 'sale-2', org_id: 'org-1', item_id: 'i7', seller_id: 'u7', quantity: 2, unit_price: 5, total: 10, sold_at: `${today.toISOString().slice(0, 10)}T10:03:00.000Z`, created_at: daysAgo(0), item_name: 'Bright Cola 500ml', sku: 'BC-500', item_unit: 'bottle', seller_name: 'Tariro Mbira' },
+    { id: 'sale-3', org_id: 'org-1', item_id: 'i1', seller_id: 'u6', quantity: 1, unit_price: 120, total: 120, sold_at: `${today.toISOString().slice(0, 10)}T11:47:00.000Z`, created_at: daysAgo(0), item_name: 'Sunrise Maize Meal 10kg', sku: 'SM-10KG', item_unit: 'bag', seller_name: 'Kudzai Banda' },
+    { id: 'sale-4', org_id: 'org-1', item_id: 'i8', seller_id: 'u7', quantity: 3, unit_price: 2, total: 6, sold_at: `${today.toISOString().slice(0, 10)}T14:28:00.000Z`, created_at: daysAgo(0), item_name: 'Cedar Soap Bar', sku: 'CS-BAR', item_unit: 'bar', seller_name: 'Kudzai Banda' },
   ],
 }

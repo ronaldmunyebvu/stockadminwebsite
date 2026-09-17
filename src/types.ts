@@ -1,4 +1,4 @@
-export type UserRole = 'counter' | 'auditor' | 'admin'
+export type UserRole = 'counter' | 'auditor' | 'admin' | 'seller'
 export type SessionStatus = 'draft' | 'in_progress' | 'submitted' | 'submitted_to_admin' | 'under_review' | 'approved' | 'rejected' | 'recount_assigned'
 export type LocationType = 'warehouse' | 'store' | 'site'
 
@@ -11,4 +11,7 @@ export interface AuditLog { id: string; org_id: string; entity_type: string; ent
 export interface ExcelUpload { id: string; org_id: string; file_name: string; columns: string[]; rows_preview: Record<string, string>[]; imported_count: number; zone_id?: string; uploaded_by?: string; created_at: string }
 export interface CountEntry { id: string; session_id: string; item_id: string; counted_qty: number; system_qty: number; variance: number; counted_by: string; counted_at: string; is_flagged: boolean; notes: string; count_round: number; witnessed: boolean; witness_name: string; entry_role?: 'counter' | 'auditor'; counter_entry_id?: string | null; item?: { id: string; name: string; sku: string; unit: string }; counter?: { id: string; full_name: string } }
 export interface CountReport { id: string; org_id: string; session_id: string; submitted_by: string; submitted_by_name?: string; report_type: 'auditor' | 'admin'; summary: string; items_summary: { item_id: string; name: string; sku: string; system_qty: number; counted_qty: number; variance: number; is_flagged: boolean; count_round: number }[]; total_items: number; matched_items: number; variance_items: number; status: string; created_at: string }
-export interface AdminData { org: { id: string; name: string; variance_threshold_pct: number; variance_threshold_units: number }; users: User[]; locations: Location[]; zones: Zone[]; items: Item[]; sessions: CountSession[]; logs: AuditLog[]; uploads: ExcelUpload[]; source: 'demo' | 'neon' }
+export interface Sale { id: string; org_id: string; item_id: string; seller_id: string | null; quantity: number; unit_price: number; total: number; sold_at: string; created_at: string; item_name?: string; sku?: string; item_unit?: string; item_barcode?: string; seller_name?: string }
+export interface DailySales { date: string; total_sales: number; total_revenue: number; items_sold: number; sales: Sale[] }
+export interface SalesSummary { total_revenue: number; total_sales: number; total_items_sold: number; days: DailySales[] }
+export interface AdminData { org: { id: string; name: string; variance_threshold_pct: number; variance_threshold_units: number }; users: User[]; locations: Location[]; zones: Zone[]; items: Item[]; sessions: CountSession[]; logs: AuditLog[]; uploads: ExcelUpload[]; sales?: Sale[]; source: 'demo' | 'neon' }

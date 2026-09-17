@@ -1,5 +1,5 @@
 import { demoData } from './data'
-import type { AdminData, CountEntry, CountReport, CountSession, Item, Location, User, Zone } from './types'
+import type { AdminData, CountEntry, CountReport, CountSession, Item, Location, SalesSummary, User, Zone } from './types'
 
 const configuredUrl = (import.meta.env.VITE_API_URL as string | undefined)?.trim().replace(/\/+$/, '').replace(/\/api$/, '')
 export const apiUrl = configuredUrl || '/api'
@@ -28,7 +28,7 @@ export async function loadAdminData(): Promise<AdminData> { return apiUrl ? requ
 export async function updateUserStatus(id: string, isActive: boolean) { if (apiUrl) return request(`/api/admin/users/${id}/status`, { method: 'PATCH', body: JSON.stringify({ isActive }) }) }
 export async function deleteUser(id: string) { if (apiUrl) return request(`/api/admin/users/${id}`, { method: 'DELETE' }) }
 export async function updateThresholds(orgId: string, pct: number, units: number) { if (apiUrl) return request(`/api/admin/organizations/${orgId}/thresholds`, { method: 'PATCH', body: JSON.stringify({ pct, units }) }) }
-export async function createUser(orgId: string, input: { full_name: string; email: string; role: 'counter' | 'auditor' | 'admin'; phone?: string }): Promise<User> { return apiUrl ? request<User>('/api/admin/users', { method: 'POST', body: JSON.stringify(input) }) : { id: `demo-${Date.now()}`, org_id: orgId, ...input, is_active: true, setup_status: 'invited' as const, created_at: new Date().toISOString() } }
+export async function createUser(orgId: string, input: { full_name: string; email: string; role: 'counter' | 'auditor' | 'admin' | 'seller'; phone?: string }): Promise<User> { return apiUrl ? request<User>('/api/admin/users', { method: 'POST', body: JSON.stringify(input) }) : { id: `demo-${Date.now()}`, org_id: orgId, ...input, is_active: true, setup_status: 'invited' as const, created_at: new Date().toISOString() } }
 export async function createLocation(orgId: string, input: { name: string; type: 'warehouse' | 'store' | 'site'; address?: string }): Promise<Location> { return apiUrl ? request<Location>('/api/admin/locations', { method: 'POST', body: JSON.stringify(input) }) : { id: `demo-${Date.now()}`, org_id: orgId, ...input } }
 export async function createZone(locationId: string, input: { name: string; code?: string }): Promise<Zone> { return apiUrl ? request<Zone>('/api/admin/zones', { method: 'POST', body: JSON.stringify({ location_id: locationId, ...input }) }) : { id: `demo-${Date.now()}`, location_id: locationId, ...input } }
 export async function createItem(orgId: string, input: { zone_id: string; name: string; sku: string; unit: string; system_qty: number; barcode?: string; category?: string }) { const result = await createItems(orgId, [input]); return result[0] }
@@ -42,3 +42,4 @@ export async function rejectSession(sessionId: string, reason: string) { return 
 export async function recountSession(sessionId: string, counterId?: string) { return request<CountSession>(`/api/admin/sessions/${sessionId}/recount`, { method: 'POST', body: JSON.stringify({ counterId }) }) }
 export async function submitReport(sessionId: string, data: { summary?: string; report_type?: string }): Promise<CountReport> { return request<CountReport>(`/api/admin/sessions/${sessionId}/report`, { method: 'POST', body: JSON.stringify(data) }) }
 export async function getSessionReport(sessionId: string): Promise<CountReport | null> { return request<CountReport | null>(`/api/admin/sessions/${sessionId}/report`) }
+export async function getSales(): Promise<SalesSummary> { return request<SalesSummary>('/api/admin/sales') }
