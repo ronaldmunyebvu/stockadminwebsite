@@ -2,7 +2,7 @@ export type UserRole = 'counter' | 'auditor' | 'admin' | 'seller'
 export type SessionStatus = 'draft' | 'in_progress' | 'submitted' | 'submitted_to_admin' | 'under_review' | 'approved' | 'rejected' | 'recount_assigned'
 export type LocationType = 'warehouse' | 'store' | 'site'
 
-export interface User { id: string; org_id: string; full_name: string; email: string; role: UserRole; is_active: boolean; setup_status?: 'active' | 'invited' | 'setup_complete'; created_at: string }
+export interface User { id: string; org_id: string; full_name: string; email?: string; phone?: string; role: UserRole; is_active: boolean; setup_status?: 'active' | 'invited' | 'setup_complete'; created_at: string }
 export interface Location { id: string; org_id: string; name: string; type: LocationType; address?: string }
 export interface Zone { id: string; location_id: string; name: string; code?: string }
 export interface Item { id: string; org_id: string; zone_id: string; name: string; sku: string; barcode?: string; unit: string; category?: string; selling_price?: number; system_qty: number; updated_at: string }

@@ -17,6 +17,7 @@ runMigrations()
 if (pool) pool.query("ALTER TABLE items ADD COLUMN IF NOT EXISTS selling_price numeric NOT NULL DEFAULT 0").catch(err => console.error('Migration selling_price failed:', err.message))
 if (pool) {
   pool.query("ALTER TABLE users ALTER COLUMN email DROP NOT NULL").catch(err => console.error('Migration email nullable failed:', err.message))
+  pool.query("DO $$ BEGIN ALTER TABLE users DROP CONSTRAINT IF EXISTS users_role_check; ALTER TABLE users ADD CONSTRAINT users_role_check CHECK (role IN ('admin','counter','auditor','seller')); EXCEPTION WHEN others THEN NULL; END $$").catch(err => console.error('Migration seller role failed:', err.message))
   pool.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS otp_code text").catch(err => console.error('Migration otp_code failed:', err.message))
   pool.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS otp_expires_at timestamptz").catch(err => console.error('Migration otp_expires_at failed:', err.message))
   pool.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS otp_purpose text").catch(err => console.error('Migration otp_purpose failed:', err.message))
@@ -205,6 +206,61 @@ app.get('/api/admin/sales', requireDatabase, auth, adminOnly, async (req, res) =
   res.json({ total_revenue: days.reduce((sum, day) => sum + day.total_revenue, 0), total_sales: days.reduce((sum, day) => sum + day.total_sales, 0), total_items_sold: days.reduce((sum, day) => sum + day.items_sold, 0), days })
 })
 app.patch('/api/admin/users/:id/status', requireDatabase, auth, adminOnly, async (req, res) => { const result = await pool.query('update users set is_active=$1 where id=$2 and org_id=$3 returning id,org_id,role,full_name,email,phone,is_active,setup_status,created_at', [Boolean(req.body.isActive), req.params.id, req.user.orgId]); res.json(result.rows[0]) })
+app.patch('/api/admin/users/:id', requireDatabase, auth, adminOnly, async (req, res) => {
+  try {
+    const { full_name, role } = req.body
+    const current = await pool.query('select * from users where id=$1 and org_id=$2', [req.params.id, req.user.orgId])
+    if (!current.rowCount) return res.status(404).json({ error: 'Team member not found' })
+    const user = current.rows[0]
+    const fields = []
+    const values = []
+    if (full_name !== undefined) {
+      values.push(String(full_name).trim())
+      fields.push(`full_name=$${values.length}`)
+    }
+    if (role !== undefined) {
+      if (!['admin', 'counter', 'auditor', 'seller'].includes(role)) return res.status(400).json({ error: 'Role must be admin, counter, auditor, or seller' })
+      values.push(role)
+      fields.push(`role=$${values.length}`)
+    }
+    const contactRequested = req.body.email !== undefined || req.body.phone !== undefined || req.body.contact !== undefined
+    if (contactRequested) {
+      const contact = normalizeIdentifier(req.body.contact ?? req.body.email ?? req.body.phone)
+      if (contact) {
+        const phoneOnly = isPhoneIdentifier(contact)
+        if (phoneOnly) {
+          const norm = contact.replace(/\D/g, '')
+          const clash = await pool.query("select id from users where org_id=$1 and regexp_replace(coalesce(phone,''),'[^0-9]','','g')=$2 and id<>$3", [req.user.orgId, norm, req.params.id])
+          if (clash.rowCount) return res.status(400).json({ error: 'That phone number is already used by another member of this shop' })
+          const offset = values.length
+          values.push(null, contact)
+          fields.push(`email=$${offset + 1}`, `phone=$${offset + 2}`)
+        } else {
+          const clash = await pool.query('select id from users where org_id=$1 and lower(email)=lower($2) and id<>$3', [req.user.orgId, contact.toLowerCase(), req.params.id])
+          if (clash.rowCount) return res.status(400).json({ error: 'That email is already used by another member of this shop' })
+          values.push(contact.toLowerCase())
+          fields.push(`email=$${values.length}`)
+        }
+      }
+    } else {
+      const contact = req.body.identifier
+      if (contact) {
+        const phoneOnly = isPhoneIdentifier(contact)
+        const offset = values.length
+        values.push(phoneOnly ? null : contact.toLowerCase(), phoneOnly ? contact : null)
+        fields.push(`email=$${offset + 1}`, `phone=$${offset + 2}`)
+      }
+    }
+    if (!fields.length) return res.status(400).json({ error: 'Nothing to update' })
+    values.push(req.params.id, req.user.orgId)
+    const result = await pool.query(`update users set ${fields.join(', ')} where id=$${values.length - 1} and org_id=$${values.length} returning id,org_id,role,full_name,email,phone,is_active,setup_status,created_at`, values)
+    await pool.query("insert into audit_logs (org_id,entity_type,entity_id,action,actor_id,payload) values ($1,$2,$3,$4,$5,$6)", [req.user.orgId, 'user', req.params.id, 'updated', req.user.id, JSON.stringify({ role: result.rows[0].role, full_name: result.rows[0].full_name })])
+    res.json(result.rows[0])
+  } catch (error) {
+    if (error.code === '23505') return res.status(400).json({ error: 'That email or phone number is already used by another member of this shop' })
+    res.status(500).json({ error: `Unable to update member: ${error.message}` })
+  }
+})
 app.delete('/api/admin/users/:id', requireDatabase, auth, adminOnly, async (req, res) => { if (req.params.id === req.user.id) return res.status(400).json({ error: 'You cannot delete your own account' }); const client = await pool.connect(); try { await client.query('BEGIN'); const user = await client.query('select id from users where id=$1 and org_id=$2', [req.params.id, req.user.orgId]); if (!user.rowCount) return res.status(404).json({ error: 'User not found' }); await client.query('update count_sessions set assigned_counter_id=null where assigned_counter_id=$1', [req.params.id]); await client.query('update count_sessions set assigned_counter_2_id=null where assigned_counter_2_id=$1', [req.params.id]); await client.query('update count_sessions set auditor_id=null where auditor_id=$1', [req.params.id]); await client.query('update audit_logs set actor_id=null where actor_id=$1', [req.params.id]); await client.query('update excel_uploads set uploaded_by=null where uploaded_by=$1', [req.params.id]); await client.query('update count_entries set counted_by=null where counted_by=$1', [req.params.id]); await client.query('update sales set seller_id=null where seller_id=$1', [req.params.id]); const result = await client.query('delete from users where id=$1 and org_id=$2', [req.params.id, req.user.orgId]); await client.query('COMMIT'); res.json({ success: true }) } catch (error) { await client.query('ROLLBACK'); res.status(500).json({ error: `Unable to delete user: ${error.message}` }) } finally { client.release() } })
 app.patch('/api/admin/organizations/:id/thresholds', requireDatabase, auth, adminOnly, async (req, res) => { const result = await pool.query('update organizations set variance_threshold_pct=$1, variance_threshold_units=$2 where id=$3 and id=$4 returning id,name,variance_threshold_pct,variance_threshold_units', [req.body.pct, req.body.units, req.params.id, req.user.orgId]); res.json(result.rows[0]) })
 app.post('/api/admin/users', requireDatabase, auth, adminOnly, async (req, res) => { try { const { full_name, role, phone } = req.body; const contact = normalizeIdentifier(req.body.email || req.body.identifier); if (!full_name || !contact || !role) return res.status(400).json({ error: 'Name, email or phone, and role are required' }); if (!['admin', 'counter', 'auditor', 'seller'].includes(role)) return res.status(400).json({ error: 'Role must be admin, counter, auditor, or seller' }); const phoneOnly = isPhoneIdentifier(contact); const existing = await pool.query(phoneOnly ? "select id from users where org_id=$1 and regexp_replace(coalesce(phone,''), '[^0-9]', '', 'g') = regexp_replace($2, '[^0-9]', '', 'g')" : 'select id from users where org_id=$1 and lower(email)=lower($2)', [req.user.orgId, contact]); if (existing.rowCount) return res.status(400).json({ error: 'That email or phone is already a member of this shop' }); const code = makeCode(); const result = await pool.query('insert into users (org_id,full_name,email,role,phone,is_active,setup_status,invite_code,email_verified) values ($1,$2,$3,$4,$5,true,\'invited\',$6,true) returning id,org_id,role,full_name,email,phone,is_active,setup_status,created_at', [req.user.orgId, full_name.trim(), phoneOnly ? null : contact.toLowerCase(), role, phoneOnly ? contact : phone || null, code]); try { const channel = await deliverCode(contact, code, 'invitation'); res.status(201).json({ ...result.rows[0], channel, code: process.env.NODE_ENV === 'production' ? undefined : code }) } catch (error) { console.error('Invite code delivery failed:', error.message); res.status(201).json({ ...result.rows[0], channel: null, code: process.env.NODE_ENV === 'production' ? undefined : code }) } } catch (error) { if (error.code === '23505') return res.status(400).json({ error: 'A user with that email or phone already exists' }); res.status(500).json({ error: 'Failed to create user' }) } })
