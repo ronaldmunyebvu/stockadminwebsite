@@ -16,14 +16,21 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   return body as T
 }
 
-export async function signInAdmin(email: string, password: string) {
-  if (!apiUrl) return { user: { id: 'demo-admin', email }, profile: demoData.users[0] }
-  const result = await request<{ token: string; user: AdminData['users'][number] }>('/api/auth/login', { method: 'POST', body: JSON.stringify({ email, password, role: 'admin' }) })
+export async function signInAdmin(identifier: string, password: string) {
+  if (!apiUrl) return { user: { id: 'demo-admin', email: identifier }, profile: demoData.users[0] }
+  const result = await request<{ token: string; user: AdminData['users'][number] }>('/api/auth/login', { method: 'POST', body: JSON.stringify({ identifier, email: identifier, password, role: 'admin' }) })
   localStorage.setItem('stockcount_admin_token', result.token)
   return { user: result.user, profile: result.user }
 }
-export async function createShopAdmin(shopName: string, fullName: string, email: string, password: string) { if (!apiUrl) return { user: { id: 'demo-admin', email }, profile: { ...demoData.users[0], full_name: fullName, email } }; return request<{ requiresConfirmation: true; email: string }>('/api/auth/admin/signup', { method: 'POST', body: JSON.stringify({ shopName, fullName, email, password }) }) }
-export async function signOutAdmin() { localStorage.removeItem('stockcount_admin_token') }
+export async function createShopAdmin(shopName: string, fullName: string, identifier: string, password: string) { if (!apiUrl) return { user: { id: 'demo-admin', email: identifier }, profile: { ...demoData.users[0], full_name: fullName, email: identifier } }; return request<{ requiresOtp: true; requiresConfirmation: true; channel: 'sms' | 'email'; identifier: string; code?: string }>('/api/auth/admin/signup', { method: 'POST', body: JSON.stringify({ shopName, fullName, identifier, password }) }) }
+export async function sendOtp(identifier: string, purpose = 'reset') { if (!apiUrl) return { ok: true, channel: 'email' as const, code: '123456' }; return request<{ ok: true; channel: 'sms' | 'email'; code?: string }>('/api/auth/otp/send', { method: 'POST', body: JSON.stringify({ identifier, purpose }) }) }
+export async function verifyOtp(identifier: string, code: string, purpose = 'reset') { if (apiUrl) return request<{ ok: true }>('/api/auth/otp/verify', { method: 'POST', body: JSON.stringify({ identifier, code, purpose }) }) }
+export async function resetPassword(identifier: string, code: string, password: string) { if (apiUrl) return request<{ ok: true }>('/api/auth/reset-password', { method: 'POST', body: JSON.stringify({ identifier, code, password }) }) }
+export async function updateOrganization(patch: { name?: string; tagline?: string | null; logoUrl?: string | null }) { if (!apiUrl) return { ...demoData.org } as AdminData['org']; return request<AdminData['org']>('/api/admin/organization', { method: 'PATCH', body: JSON.stringify({ name: patch.name, tagline: patch.tagline, logo_url: patch.logoUrl }) }) }
+export async function updateItem(id: string, patch: Partial<{ name: string; sku: string; unit: string; zone_id: string; system_qty: number; barcode?: string; category?: string; selling_price?: number }>): Promise<AdminData['items'][number]> { return apiUrl ? request<AdminData['items'][number]>(`/api/admin/items/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }) : ({ id, ...patch } as AdminData['items'][number]) }
+export async function deleteItem(id: string) { if (apiUrl) return request<{ success: true }>(`/api/admin/items/${id}`, { method: 'DELETE' }) }
+export async function deleteInventory() { if (apiUrl) return request<{ success: true; deleted: number }>('/api/admin/inventory', { method: 'DELETE', body: JSON.stringify({ confirm: 'DELETE' }) }) }
+export async function signOutAdmin() { try { await request<{ ok: true }>('/api/auth/logout', { method: 'POST' }) } catch { } localStorage.removeItem('stockcount_admin_token') }
 export async function deleteShop(confirm1: string, confirm2: string, shopName: string) { return request<{ success: boolean }>('/api/admin/org', { method: 'DELETE', body: JSON.stringify({ confirm1, confirm2, shopName }) }) }
 export async function loadAdminData(): Promise<AdminData> { return apiUrl ? request<AdminData>('/api/admin/data') : structuredClone(demoData) }
 export async function updateUserStatus(id: string, isActive: boolean) { if (apiUrl) return request(`/api/admin/users/${id}/status`, { method: 'PATCH', body: JSON.stringify({ isActive }) }) }
@@ -43,4 +50,4 @@ export async function rejectSession(sessionId: string, reason: string) { return 
 export async function recountSession(sessionId: string, counterId?: string) { return request<CountSession>(`/api/admin/sessions/${sessionId}/recount`, { method: 'POST', body: JSON.stringify({ counterId }) }) }
 export async function submitReport(sessionId: string, data: { summary?: string; report_type?: string }): Promise<CountReport> { return request<CountReport>(`/api/admin/sessions/${sessionId}/report`, { method: 'POST', body: JSON.stringify(data) }) }
 export async function getSessionReport(sessionId: string): Promise<CountReport | null> { return request<CountReport | null>(`/api/admin/sessions/${sessionId}/report`) }
-export async function getSales(): Promise<SalesSummary> { return request<SalesSummary>('/api/admin/sales') }
+export async function getSales(from?: string, to?: string): Promise<SalesSummary> { const params = new URLSearchParams(); if (from) params.set('from', from); if (to) params.set('to', to); return request<SalesSummary>(`/api/admin/sales?${params}`) }
