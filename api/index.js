@@ -1,9 +1,9 @@
 import app from '../server/app.cjs'
 
-export const config = { runtime: 'nodejs' }
+export const config = { runtime: 'nodejs', maxDuration: 60 }
 
 export default function handler(req, res, next) {
-  if (!req.url.startsWith('/api')) {
+  if (req.url && !req.url.startsWith('/api')) {
     const original = req.url
     req.url = '/api' + original
     req.originalUrl = '/api' + (req.originalUrl || original)
