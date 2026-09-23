@@ -680,6 +680,7 @@ function AuthScreen({ onAuthed }: { onAuthed: () => void }) {
   const [channel, setChannel] = useState('email')
   const [confirmationSent, setConfirmationSent] = useState(false)
   const [logoDataUrl, setLogoDataUrl] = useState('')
+  const [address, setAddress] = useState('')
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
   const readLogo = (event: ChangeEvent<HTMLInputElement>) => { const file = event.target.files?.[0]; event.target.value = ''; if (!file) return; const reader = new FileReader(); reader.onload = () => { const url = String(reader.result || ''); if (url.length <= 4000000) setLogoDataUrl(url); }; reader.readAsDataURL(file) }
