@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useState, type ChangeEvent, type FormEvent, type ReactNode } from 'react'
 import { Activity, Archive, ArrowUpRight, Banknote, Boxes, Check, ChevronDown, CircleHelp, ClipboardList, Cloud, Database, Download, Eye, FileText, LayoutDashboard, LogOut, Menu, Package, Plus, RefreshCw, Search, Settings, ShieldCheck, ShoppingCart, SlidersHorizontal, Trash2, UserRound, Users, Wifi, X } from 'lucide-react'
 import { approveSession, createExcelUpload, createItem, createItems, createLocation, createShopAdmin, createZone, createUser, deleteInventory, deleteItem, deleteSession, deleteShop, deleteUser, getSales, getSessionEntries, getSessionReport, isNeonConfigured, loadAdminData, recountSession, rejectSession, resetPassword, scheduleStockCount, sendOtp, signInAdmin, signOutAdmin, submitReport, updateItem, updateOrganization, updateThresholds, updateUser, updateUserStatus, verifyOtp } from './service'
-import * as XLSX from 'xlsx'
 import type { AdminData, CountEntry, CountReport, DailySales, SalesSummary, SessionStatus, UserRole } from './types'
 
 const statusLabels: Record<SessionStatus, string> = { draft: 'Draft', in_progress: 'Counting', submitted: 'Submitted', submitted_to_admin: 'Awaiting review', under_review: 'Needs review', approved: 'Approved', rejected: 'Rejected', recount_assigned: 'Recount' }
@@ -404,6 +403,7 @@ function readSpreadsheetCell(row: Record<string, string>, aliases: Set<string>) 
 }
 
 async function parseImportedSpreadsheet(file: File, existingItems: AdminData['items'] = []): Promise<ParsedSheet> {
+  const XLSX = await import('xlsx')
   const workbook = XLSX.read(await file.arrayBuffer(), { type: 'array' })
   const worksheet = workbook.Sheets[workbook.SheetNames.find(sheetName => workbook.Sheets[sheetName] && !sheetName.startsWith('~')) ?? workbook.SheetNames[0]]
   if (!worksheet) throw new Error('No worksheet found in the selected file.')
