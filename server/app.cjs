@@ -92,7 +92,19 @@ async function sendMail(to, subject, text) {
 }
 function isPhoneIdentifier(value) { return /^\+?[\d\s().-]{7,}$/.test(String(value || '').trim()) }
 function normalizeIdentifier(value) { return String(value || '').trim() }
-async function sendSms(phone, text) { console.log(`[SMS] -> ${phone}: ${text}`) }
+let atSms = null
+const atApiKey = process.env.AT_API_KEY
+if (atApiKey && process.env.AT_USERNAME) {
+  try {
+    const at = require('africastalking')({ apiKey: atApiKey, username: process.env.AT_USERNAME })
+    atSms = at.SMS
+  } catch (err) { console.error('Africa\'s Talking SDK init failed:', err.message) }
+}
+async function sendSms(phone, text) {
+  if (!atSms) return console.log(`[SMS] -> ${phone}: ${text}`)
+  const from = process.env.AT_SENDER_ID || undefined
+  try { await atSms.send({ to: [phone], message: text, from }) } catch (err) { console.error(`[SMS] AT send failed -> ${phone}:`, err.message) }
+}
 async function deliverCode(identifier, code, purpose) {
   console.log(`[OTP] purpose=${purpose} identifier=${identifier} code=${code}`)
   if (isPhoneIdentifier(identifier)) {
