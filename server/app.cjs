@@ -1,4 +1,4 @@
-require('dotenv').config()
+﻿require('dotenv').config()
 const express = require('express')
 const cors = require('cors')
 const crypto = require('crypto')
@@ -144,22 +144,22 @@ async function ecoCashCharge({ customerMsisdn, amount, currency, clientReference
     referenceCode: clientReference || crypto.randomUUID(),
     endUserId: normalizeMsisdn(customerMsisdn),
     notifyUrl: notifyUrl || cfg.notifyUrl,
-    remarks: description || 'StockCount subscription',
+    remarks: description || 'ClickCount subscription',
     transactionOperationStatus: cfg.operationStatus,
     tranType: cfg.tranType,
     paymentAmount: {
-      charginginformation: { amount: Number(amount).toFixed(2), currency, description: description || 'StockCount subscription' },
-      chargeMetaData: { channel: cfg.channel, purchaseCategoryCode: cfg.categoryCode, onBeHalfOf: 'StockCount' }
+      charginginformation: { amount: Number(amount).toFixed(2), currency, description: description || 'ClickCount subscription' },
+      chargeMetaData: { channel: cfg.channel, purchaseCategoryCode: cfg.categoryCode, onBeHalfOf: 'ClickCount' }
     },
     merchantCode: cfg.merchantCode,
     merchantPin: cfg.merchantPin,
     merchantNumber: cfg.merchantNumber,
     currencyCode: currency,
     countryCode: 'ZW',
-    terminalID: 'StockCount',
-    location: 'StockCount',
-    superMerchantName: 'StockCount',
-    merchantName: 'StockCount'
+    terminalID: 'ClickCount',
+    location: 'ClickCount',
+    superMerchantName: 'ClickCount',
+    merchantName: 'ClickCount'
   }
   const res = await fetch(`${cfg.baseUrl.replace(/\/+$/, '')}/transactions/amount/`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: ecocashAuth(cfg) }, body: JSON.stringify(body) })
   const text = await res.text().catch(() => '')
@@ -281,10 +281,10 @@ async function sendSms(phone, text) {
 async function deliverCode(identifier, code, purpose) {
   console.log(`[OTP] purpose=${purpose} identifier=${identifier} code=${code}`)
   if (isPhoneIdentifier(identifier)) {
-    await sendSms(identifier, `Your StockCount ${purpose} code is ${code}. It expires in 10 minutes.`)
+    await sendSms(identifier, `Your ClickCount ${purpose} code is ${code}. It expires in 10 minutes.`)
     return 'sms'
   }
-  try { await sendMail(identifier, `Your StockCount ${purpose} code`, `Your StockCount verification code is: ${code}\n\nThis code expires in 10 minutes.`) } catch (err) { console.error('OTP email failed:', err.message) }
+  try { await sendMail(identifier, `Your ClickCount ${purpose} code`, `Your ClickCount verification code is: ${code}\n\nThis code expires in 10 minutes.`) } catch (err) { console.error('OTP email failed:', err.message) }
   return 'email'
 }
 async function issueOtp(user, purpose, identifier) {
@@ -428,7 +428,7 @@ app.post('/api/payments/initiate', requireDatabase, auth, async (req, res) => {
   if (!customerMsisdn) return res.status(400).json({ error: 'Enter the EcoCash mobile number that should receive the payment request.' })
   let charge
   try {
-    charge = await ecoCashCharge({ customerMsisdn, amount, currency: CURRENCY, clientReference: payment.id, notifyUrl: eco.notifyUrl, description: `StockCount ${intent === 'upgrade' ? 'Unlimited upgrade' : intent === 'extra_member' ? 'Extra member slot' : 'subscription'}` })
+    charge = await ecoCashCharge({ customerMsisdn, amount, currency: CURRENCY, clientReference: payment.id, notifyUrl: eco.notifyUrl, description: `ClickCount ${intent === 'upgrade' ? 'Unlimited upgrade' : intent === 'extra_member' ? 'Extra member slot' : 'subscription'}` })
   } catch (err) {
     await pool.query("update payments set status='failed', provider_ref=$1 where id=$2", [String(err.message).slice(0, 300), payment.id])
     return res.status(502).json({ error: err.message })

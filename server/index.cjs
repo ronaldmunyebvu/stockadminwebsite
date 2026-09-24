@@ -1,4 +1,4 @@
-require('dotenv').config()
+﻿require('dotenv').config()
 const path = require('path')
 const app = require('./app.cjs')
 const port = Number(process.env.PORT || 8787)
@@ -14,4 +14,4 @@ function expressStaticIfDistExists() {
   return (req, res, next) => next()
 }
 
-app.listen(port, '0.0.0.0', () => console.log(`StockCount Neon API listening on http://localhost:${port}`))
+app.listen(port, '0.0.0.0', () => console.log(`ClickCount Neon API listening on http://localhost:${port}`))
