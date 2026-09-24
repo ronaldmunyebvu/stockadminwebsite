@@ -260,8 +260,8 @@ function adminOnly(req, res, next) { if (req.user.role !== 'admin') return res.s
 function makeCode() { return String(crypto.randomInt(100000, 999999)) }
 async function sendMail(to, subject, text) {
   if (!process.env.SMTP_HOST) return
-  const transporter = nodemailer.createTransport({ host: process.env.SMTP_HOST, port: Number(process.env.SMTP_PORT || 587), secure: process.env.SMTP_SECURE === 'true', auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_APP_PASSWORD } })
-  await transporter.sendMail({ from: process.env.SMTP_FROM || process.env.SMTP_USER, to, subject, text })
+  const transporter = nodemailer.createTransport({ host: process.env.SMTP_HOST, port: Number(process.env.SMTP_PORT || 587), secure: process.env.SMTP_SECURE === 'true', auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_APP_PASSWORD }, connectionTimeout: 6000, greetingTimeout: 6000, socketTimeout: 6000 })
+  await Promise.race([transporter.sendMail({ from: process.env.SMTP_FROM || process.env.SMTP_USER, to, subject, text }), new Promise((_, reject) => setTimeout(() => reject(new Error('SMTP delivery timed out')), 7000))])
 }
 function isPhoneIdentifier(value) { return /^\+?[\d\s().-]{7,}$/.test(String(value || '').trim()) }
 function normalizeIdentifier(value) { return String(value || '').trim() }
