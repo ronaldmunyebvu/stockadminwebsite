@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, type ChangeEvent, type FormEvent, type ReactNode } from 'react'
-import { Activity, Archive, ArrowUpRight, Banknote, Boxes, Check, ChevronDown, CircleHelp, ClipboardList, Cloud, Database, Download, Eye, FileText, LayoutDashboard, LogOut, Menu, Package, Plus, RefreshCw, Search, Settings, ShieldCheck, ShoppingCart, SlidersHorizontal, Trash2, UserRound, Users, Wifi, X } from 'lucide-react'
-import { approveSession, createExcelUpload, createItem, createItems, createLocation, createShopAdmin, createZone, createUser, deleteInventory, deleteItem, deleteSession, deleteShop, deleteUser, getSales, getSessionEntries, getSessionReport, isNeonConfigured, loadAdminData, recountSession, rejectSession, resetPassword, scheduleStockCount, sendOtp, signInAdmin, signOutAdmin, submitReport, updateItem, updateOrganization, updateThresholds, updateUser, updateUserStatus, verifyOtp } from './service'
-import type { AdminData, CountEntry, CountReport, DailySales, SalesSummary, SessionStatus, UserRole } from './types'
+import { Activity, Archive, ArrowUpRight, Banknote, Boxes, Check, ChevronDown, CircleHelp, ClipboardList, Cloud, CreditCard, Database, Download, Eye, FileText, LayoutDashboard, Lock, LogOut, Menu, Package, Plus, RefreshCw, Search, Settings, ShieldCheck, ShoppingCart, SlidersHorizontal, Trash2, UserRound, Users, Wifi, X } from 'lucide-react'
+import { ApiError, approveSession, createExcelUpload, createItem, createItems, createLocation, createShopAdmin, createZone, createUser, deleteInventory, deleteItem, deleteSession, deleteShop, deleteUser, getPaymentStatus, getSales, getSessionEntries, getSessionReport, initiatePayment, isNeonConfigured, loadAdminData, recountSession, rejectSession, resetPassword, scheduleStockCount, sendOtp, signInAdmin, signOutAdmin, submitReport, updateItem, updateOrganization, updateThresholds, updateUser, updateUserStatus, verifyOtp } from './service'
+import type { AdminData, CountEntry, CountReport, DailySales, SalesSummary, SessionStatus, Subscription, UserRole } from './types'
 
 const statusLabels: Record<SessionStatus, string> = { draft: 'Draft', in_progress: 'Counting', submitted: 'Submitted', submitted_to_admin: 'Awaiting review', under_review: 'Needs review', approved: 'Approved', rejected: 'Rejected', recount_assigned: 'Recount' }
 const roleLabels: Record<UserRole, string> = { admin: 'Admin', counter: 'Counter', auditor: 'Auditor', seller: 'Seller' }
@@ -13,6 +13,7 @@ const nav = [
   { id: 'team', label: 'Team & access', icon: Users },
   { id: 'locations', label: 'Locations', icon: Boxes },
   { id: 'activity', label: 'Activity log', icon: Activity },
+  { id: 'billing', label: 'Billing', icon: CreditCard },
   { id: 'settings', label: 'Settings', icon: Settings },
 ]
 
@@ -30,17 +31,42 @@ export default function App() {
   const [notice, setNotice] = useState('')
   const [loading, setLoading] = useState(true)
   const [adminReady, setAdminReady] = useState(!isNeonConfigured || Boolean(localStorage.getItem('stockcount_admin_token')))
+  const [sub, setSub] = useState<Subscription | null>(null)
+  const [subLoading, setSubLoading] = useState(true)
   const [dialog, setDialog] = useState<'team' | 'inventory' | 'edit-item' | 'import' | 'schedule' | 'threshold-confirm' | null>(null)
   const [editingItem, setEditingItem] = useState<AdminData['items'][number] | null>(null)
   const [selectedSession, setSelectedSession] = useState<string | null>(null)
 
-  useEffect(() => {
-    if (!isNeonConfigured || localStorage.getItem('stockcount_admin_token')) loadAdminData().then(setData).catch(error => { signOutAdmin(); setAdminReady(!isNeonConfigured); setNotice(error.message) }).finally(() => setLoading(false))
-    else setLoading(false)
-  }, [])
+  const enterWorkspace = async () => {
+    setSubLoading(true); setLoading(true)
+    let subscription: Subscription | null = null
+    try { subscription = await getPaymentStatus() } catch { /* status endpoint is open; still guard */ }
+    setSub(subscription)
+    setSubLoading(false)
+    if (subscription && !subscription.paid) { setData(null); setLoading(false); return }
+    try { setData(await loadAdminData()); setLoading(false) } catch (error) { setLoading(false); signOutAdmin(); setAdminReady(false); setData(null); setNotice(error instanceof Error ? error.message : '') }
+  }
+
+  const handleSignOut = () => { signOutAdmin(); setAdminReady(false); setData(null); setSub(null) }
+
+  const payNow = async (intent: string, planType?: string, customerMsisdn?: string) => {
+    try {
+      const result = await initiatePayment(intent as 'subscribe' | 'upgrade' | 'extra_member', planType as 'basic' | 'unlimited', customerMsisdn)
+      if (result.subscription) setSub(result.subscription)
+      if (result.subscription?.paid) {
+        setNotice('Payment confirmed. You can complete the action now.')
+        try { setData(await loadAdminData()) } catch { /* usage will refresh on next load */ }
+      } else setNotice(result.message || 'Payment initiated. Once it confirms you can retry the action.')
+      return Boolean(result.subscription?.paid)
+    } catch (err) { setNotice(err instanceof Error ? err.message : 'Unable to start payment'); return false }
+  }
+
+  useEffect(() => { if (!isNeonConfigured || localStorage.getItem('stockcount_admin_token')) { enterWorkspace() } else { setSubLoading(false); setLoading(false) } }, [])
   useEffect(() => { if (!notice) return; const timer = window.setTimeout(() => setNotice(''), 3500); return () => window.clearTimeout(timer) }, [notice])
 
-  if (!adminReady) return <AuthScreen onAuthed={() => { setAdminReady(true); setLoading(true); loadAdminData().then(setData).catch(error => setNotice(error.message)).finally(() => setLoading(false)) }} />
+  if (!adminReady) return <AuthScreen onAuthed={() => { setAdminReady(true); enterWorkspace() }} />
+  if (subLoading) return <div className="loading-screen"><div className="loading-mark"><Package size={22} /></div><span>Checking your subscription</span></div>
+  if (sub && !sub.paid) return <LockedScreen sub={sub} onPaid={enterWorkspace} onSignOut={handleSignOut} />
   if (loading || !data) return <div className="loading-screen"><div className="loading-mark"><Package size={22} /></div><span>Loading your workspace</span></div>
 
   const activePage = nav.find(item => item.id === page) ?? nav[0]
@@ -66,15 +92,16 @@ export default function App() {
         {page === 'sessions' && !selectedSession && <Sessions data={data} query={query} setQuery={setQuery} onSelect={setSelectedSession} onDelete={async (id) => { try { await deleteSession(id); setData({ ...data, sessions: data.sessions.filter(s => s.id !== id) }); setNotice('Session deleted.') } catch (err) { setNotice(err instanceof Error ? err.message : 'Failed to delete session') } }} />}
         {page === 'sessions' && selectedSession && <SessionDetail sessionId={selectedSession} data={data} setData={setData} onBack={() => setSelectedSession(null)} onNotice={setNotice} />}
         {page === 'team' && <Team data={data} setData={setData} />}
-        {page === 'locations' && <Locations data={data} setData={setData} />}
+        {page === 'locations' && <Locations data={data} setData={setData} onPayNow={payNow} />}
         {page === 'activity' && <ActivityPage data={data} />}
+        {page === 'billing' && sub && <BillingPage sub={sub} onPaid={enterWorkspace} />}
         {page === 'settings' && <SettingsPage data={data} setData={setData} onSaved={() => setNotice('Settings saved to the shared workspace.')} onDeleted={() => { signOutAdmin(); setAdminReady(false); setData(null); setNotice('') }} />}
       </div>
     </main>
-    {dialog === 'team' && <InviteDialog data={data} onClose={() => setDialog(null)} onCreated={user => { setData({ ...data, users: [...data.users, user] }); setDialog(null); setNotice('Invitation created. The teammate can complete setup in the app.') }} />}
-    {dialog === 'inventory' && <ItemDialog data={data} onClose={() => setDialog(null)} onCreated={item => { setData({ ...data, items: [...data.items, item] }); setDialog(null); setNotice('Inventory item added to the shared catalogue.') }} />}
+    {dialog === 'team' && <InviteDialog data={data} onClose={() => setDialog(null)} onPayNow={payNow} onCreated={user => { setData({ ...data, users: [...data.users, user] }); setDialog(null); setNotice('Invitation created. The teammate can complete setup in the app.') }} />}
+    {dialog === 'inventory' && <ItemDialog data={data} onClose={() => setDialog(null)} onPayNow={payNow} onCreated={item => { setData({ ...data, items: [...data.items, item] }); setDialog(null); setNotice('Inventory item added to the shared catalogue.') }} />}
     {dialog === 'edit-item' && editingItem && <ItemDialog data={data} item={editingItem} onClose={() => { setDialog(null); setEditingItem(null) }} onUpdated={item => { setData({ ...data, items: data.items.map(i => i.id === item.id ? item : i) }); setDialog(null); setEditingItem(null); setNotice('Product updated in the shared catalogue.') }} />}
-    {dialog === 'import' && <ImportDialog data={data} onClose={() => setDialog(null)} onCreated={items => { setData({ ...data, items: [...items, ...data.items] }); setDialog(null); setNotice(`${items.length} products imported into the shared catalogue.`) }} />}
+    {dialog === 'import' && <ImportDialog data={data} onClose={() => setDialog(null)} onPayNow={payNow} onCreated={items => { setData({ ...data, items: [...items, ...data.items] }); setDialog(null); setNotice(`${items.length} products imported into the shared catalogue.`) }} />}
     {dialog === 'schedule' && <ScheduleDialog data={data} onClose={() => setDialog(null)} onCreated={sessions => { setData({ ...data, sessions: [...sessions, ...data.sessions] }); setDialog(null); setNotice('Count session scheduled. Products were allocated across the selected counters.') }} />}
     {dialog === 'threshold-confirm' && <ThresholdConfirmDialog org={data.org} onYes={() => { setDialog(null); setPage('settings') }} onNo={async () => { try { await updateThresholds(data.org.id, 0, 0); setData({ ...data, org: { ...data.org, variance_threshold_pct: 0, variance_threshold_units: 0 } }); setDialog('schedule'); setNotice('Thresholds set to zero. Any difference between counted and system quantity will be flagged as variance.') } catch (err) { setNotice(err instanceof Error ? err.message : 'Failed to update thresholds') } }} onClose={() => setDialog(null)} />}
   </div>
@@ -299,7 +326,7 @@ function Team({ data, setData }: { data: AdminData; setData: (data: AdminData) =
   return <div className="content-stack"><section className="team-summary"><div><span className="panel-kicker">People with access</span><h2>{data.users.filter(user => user.is_active).length} active teammates</h2><p>Manage who can count, review, and administer this workspace.</p></div><div className="avatar-stack">{data.users.filter(user => user.is_active).slice(0, 5).map(user => <div className="avatar" key={user.id} title={user.full_name}>{initials(user.full_name)}</div>)}</div></section><section className="panel table-panel"><div className="table-toolbar"><div><p className="panel-kicker">Access control</p><h3>Team members</h3></div><button className="filter-button"><SlidersHorizontal size={16} />Filter role</button></div>{error && <div className="auth-error" style={{ margin: '0 1.5rem' }}>{error}<button onClick={() => setError('')} style={{ marginLeft: 8, background: 'none', border: 'none', cursor: 'pointer', color: 'inherit' }}><X size={14} /></button></div>}<div className="table-scroll"><table><thead><tr><th>Member</th><th>Role</th><th>Status</th><th>Joined</th><th style={{ width: '150px' }} /></tr></thead><tbody>{data.users.map(user => <tr key={user.id}><td><div className="person-cell"><div className={`avatar avatar-small ${user.role === 'admin' ? 'avatar-olive' : ''}`}>{initials(user.full_name)}</div><span><strong>{user.full_name}</strong><small className="table-sub">{contact(user)}</small></span></div></td><td><span className="role-label">{roleLabels[user.role]}</span></td><td><button className={user.is_active ? 'toggle active' : 'toggle'} onClick={() => toggle(user.id, !user.is_active)}><span />{user.is_active ? 'Active' : 'Inactive'}</button></td><td className="muted">{formatDate(user.created_at)}</td><td><span className="table-actions"><button className="icon-button" title="Edit team member" onClick={() => setEditingUser(user)}><FileText size={15} /></button>{user.role !== 'admin' && <button className="icon-button" title="Delete team member" onClick={() => remove(user.id)} style={{ color: '#dc2626' }}><Trash2 size={15} /></button>}</span></td></tr>)}</tbody></table></div></section>{editingUser && <EditUserDialog data={data} user={editingUser} onClose={() => setEditingUser(null)} onUpdated={updated => { setData({ ...data, users: data.users.map(u => u.id === updated.id ? updated : u) }); setEditingUser(null); setError('') }} />}</div>
 }
 
-function Locations({ data, setData }: { data: AdminData; setData: (data: AdminData) => void }) {
+function Locations({ data, setData, onPayNow }: { data: AdminData; setData: (data: AdminData) => void; onPayNow?: (intent: string, planType?: string, customerMsisdn?: string) => Promise<boolean> }) {
   const [showAddLocation, setShowAddLocation] = useState(false)
   const [addZoneFor, setAddZoneFor] = useState<AdminData['locations'][number] | null>(null)
   return <>
@@ -309,21 +336,121 @@ function Locations({ data, setData }: { data: AdminData; setData: (data: AdminDa
       <section className="location-grid">{data.locations.map(location => <article className="location-card" key={location.id}><div className="location-card-top"><div className="location-icon"><Boxes size={19} /></div><span className="location-type">{location.type}</span><button className="icon-button"><ChevronDown size={16} /></button></div><h3>{location.name}</h3><p>{location.address}</p><div className="zone-list">{data.zones.filter(zone => zone.location_id === location.id).map(zone => <span key={zone.id}><i />{zone.name}<b>{data.items.filter(item => item.zone_id === zone.id).length}</b></span>)}{!data.zones.some(zone => zone.location_id === location.id) && <span className="no-zones">No zones yet<button className="text-button" onClick={() => setAddZoneFor(location)}>Add zone</button></span>}</div><button className="button button-secondary add-zone-button" onClick={() => setAddZoneFor(location)}><Plus size={15} />Add zone</button></article>)}</section>
       <section className="panel connection-panel"><div className="connection-icon"><Database size={20} /></div><div><p className="panel-kicker">Source connection</p><h3>StockInventorySystem connection</h3><p>This admin console and the counter/auditor app read and write through the same shared inventory API.</p></div><div className="connected-badge"><Check size={14} />{isNeonConfigured ? 'Connected' : 'Demo preview'}</div></section>
     </div>
-    {showAddLocation && <AddLocationDialog data={data} onClose={() => setShowAddLocation(false)} onCreated={location => { setData({ ...data, locations: [...data.locations, location] }); setShowAddLocation(false) }} />}
+    {showAddLocation && <AddLocationDialog data={data} onClose={() => setShowAddLocation(false)} onPayNow={onPayNow} onCreated={location => { setData({ ...data, locations: [...data.locations, location] }); setShowAddLocation(false) }} />}
     {addZoneFor && <AddZoneDialog location={addZoneFor} onClose={() => setAddZoneFor(null)} onCreated={zone => { setData({ ...data, zones: [...data.zones, zone] }); setAddZoneFor(null) }} />}
   </>
 }
 
-function AddLocationDialog({ data, onClose, onCreated }: { data: AdminData; onClose: () => void; onCreated: (location: AdminData['locations'][number]) => void }) {
-  const [name, setName] = useState(''); const [type, setType] = useState<'warehouse' | 'store' | 'site'>('store'); const [address, setAddress] = useState(''); const [busy, setBusy] = useState(false); const [error, setError] = useState('')
-  const submit = async (event: FormEvent) => { event.preventDefault(); setBusy(true); setError(''); try { onCreated(await createLocation(data.org.id, { name, type, address })) } catch (err) { setError(err instanceof Error ? err.message : 'Unable to create location') } finally { setBusy(false) } }
-  return <Dialog title="Add location" description="A location is a warehouse, store, or site. You'll add zones inside it next." onClose={onClose}><form className="dialog-form" onSubmit={submit}><label>Location name<input value={name} onChange={event => setName(event.target.value)} required placeholder="Central Warehouse" /></label><label>Type<select value={type} onChange={event => setType(event.target.value as 'warehouse' | 'store' | 'site')}><option value="warehouse">Warehouse</option><option value="store">Store</option><option value="site">Site</option></select></label><label>Address<input value={address} onChange={event => setAddress(event.target.value)} placeholder="14 Samora Machel Ave" /></label>{error && <div className="auth-error">{error}</div>}<div className="dialog-actions"><button type="button" className="button button-quiet" onClick={onClose}>Cancel</button><button className="button button-primary" disabled={busy}>{busy ? 'Creating...' : 'Add location'}</button></div></form></Dialog>
+function AddLocationDialog({ data, onClose, onCreated, onPayNow }: { data: AdminData; onClose: () => void; onCreated: (location: AdminData['locations'][number]) => void; onPayNow?: (intent: string, planType?: string, customerMsisdn?: string) => Promise<boolean> }) {
+  const [name, setName] = useState(''); const [type, setType] = useState<'warehouse' | 'store' | 'site'>('store'); const [address, setAddress] = useState(''); const [busy, setBusy] = useState(false); const [paying, setPaying] = useState(false); const [error, setError] = useState(''); const [limit, setLimit] = useState<ApiError['payment'] | null>(null); const [payPhone, setPayPhone] = useState('')
+  const showError = (err: unknown) => { const message = err instanceof Error ? err.message : 'Unable to create location'; setError(message); setLimit(err instanceof ApiError && err.code === 'LIMIT_REACHED' ? err.payment ?? null : null) }
+  const doSubmit = async () => { setBusy(true); setError(''); setLimit(null); try { onCreated(await createLocation(data.org.id, { name, type, address })) } catch (err) { showError(err) } finally { setBusy(false) } }
+  const submit = async (event: FormEvent) => { event.preventDefault(); doSubmit() }
+  return <Dialog title="Add location" description="A location is a warehouse, store, or site. You'll add zones inside it next." onClose={onClose}><form className="dialog-form" onSubmit={submit}><label>Location name<input value={name} onChange={event => setName(event.target.value)} required placeholder="Central Warehouse" /></label><label>Type<select value={type} onChange={event => setType(event.target.value as 'warehouse' | 'store' | 'site')}><option value="warehouse">Warehouse</option><option value="store">Store</option><option value="site">Site</option></select></label><label>Address<input value={address} onChange={event => setAddress(event.target.value)} placeholder="14 Samora Machel Ave" /></label>{error && <div className="auth-error">{error}{limit && onPayNow && <><input value={payPhone} onChange={event => setPayPhone(event.target.value)} placeholder="EcoCash number to receive the prompt" style={{ marginTop: 8 }} /><button type="button" className="button button-primary" disabled={paying || !payPhone.trim()} style={{ marginTop: 8 }} onClick={async () => { setPaying(true); const ok = await onPayNow(limit.intent, limit.plan_type, payPhone.trim() || undefined); setPaying(false); if (ok) { setLimit(null); doSubmit() } }}>{paying ? 'Processing...' : <><Banknote size={15} />Pay {limit.label}</>}</button></>}</div>}<div className="dialog-actions"><button type="button" className="button button-quiet" onClick={onClose}>Cancel</button><button className="button button-primary" disabled={busy}>{busy ? 'Creating...' : 'Add location'}</button></div></form></Dialog>
 }
 
 function AddZoneDialog({ location, onClose, onCreated }: { location: AdminData['locations'][number]; onClose: () => void; onCreated: (zone: AdminData['zones'][number]) => void }) {
   const [name, setName] = useState(''); const [code, setCode] = useState(''); const [busy, setBusy] = useState(false); const [error, setError] = useState('')
   const submit = async (event: FormEvent) => { event.preventDefault(); setBusy(true); setError(''); try { onCreated(await createZone(location.id, { name, code })) } catch (err) { setError(err instanceof Error ? err.message : 'Unable to create zone') } finally { setBusy(false) } }
   return <Dialog title="Add zone" description={`Create a zone inside ${location.name}. Products and counts are organized by zone.`} onClose={onClose}><form className="dialog-form" onSubmit={submit}><label>Zone name<input value={name} onChange={event => setName(event.target.value)} required placeholder="Dry Goods" /></label><label>Zone code<input value={code} onChange={event => setCode(event.target.value)} placeholder="DW-01" /></label>{error && <div className="auth-error">{error}</div>}<div className="dialog-actions"><button type="button" className="button button-quiet" onClick={onClose}>Cancel</button><button className="button button-primary" disabled={busy}>{busy ? 'Creating...' : 'Add zone'}</button></div></form></Dialog>
+}
+
+function LockedScreen({ sub, onPaid, onSignOut }: { sub: Subscription; onPaid: () => void; onSignOut: () => void }) {
+  const [busy, setBusy] = useState('')
+  const [notice, setNotice] = useState('')
+  const [phone, setPhone] = useState('')
+  const fmt = (amount: number) => `$${Number(amount).toFixed(2)}`
+  const startPayment = async (intent: 'subscribe' | 'upgrade', planType?: 'basic' | 'unlimited', phoneNumber?: string) => {
+    setBusy(intent); setNotice('')
+    try {
+      const result = await initiatePayment(intent, planType, phoneNumber)
+      if (result.subscription?.paid) { onPaid(); return }
+      setNotice(result.message || 'Payment initiated. Waiting for EcoCash confirmation...')
+      let tries = 0
+      const timer = window.setInterval(async () => {
+        tries += 1
+        try {
+          const current = await getPaymentStatus()
+          if (current.paid) { window.clearInterval(timer); onPaid(); return }
+          if (tries >= 12) { window.clearInterval(timer); setNotice('Payment not confirmed yet. If you have already paid, contact support to activate your shop.') }
+        } catch { /* keep polling */ }
+      }, 5000)
+    } catch (err) { setNotice(err instanceof Error ? err.message : 'Unable to start payment') }
+    finally { setBusy('') }
+  }
+  const plans = [
+    { id: 'basic' as const, name: 'Basic', price: fmt(sub.pricing.basic.price), desc: sub.pricing.basic.description, primary: true },
+    { id: 'unlimited' as const, name: 'Unlimited', price: fmt(sub.pricing.unlimited.price), desc: sub.pricing.unlimited.description, primary: false },
+  ]
+  return <div className="auth-screen" style={{ alignItems: 'center', justifyContent: 'center', padding: '2rem 1rem' }}>
+    <div className="auth-card" style={{ maxWidth: 580, textAlign: 'center' }}>
+      <div className="brand auth-brand"><div className="brand-mark"><Package size={21} /></div><div><strong>StockCount</strong><span>ADMIN CONSOLE</span></div></div>
+      <div style={{ width: 56, height: 56, borderRadius: '50%', background: '#fef2f2', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '1.5rem auto 1rem', color: '#dc2626' }}><Lock size={24} /></div>
+      <p className="eyebrow">Subscription required</p>
+      <h1 style={{ margin: '0 0 0.5rem' }}>Your shop is locked</h1>
+      <p className="auth-copy">Complete a monthly payment to unlock <strong>{sub.org_name}</strong>. Your counters and auditors are paused until the plan is active.</p>
+      <label style={{ display: 'block', textAlign: 'left', margin: '1.25rem 0 0' }}><span className="panel-kicker">EcoCash mobile number</span><input value={phone} onChange={event => setPhone(event.target.value.replace(/[^\d]/g, '').slice(0, 15))} placeholder="e.g. 0771234567" style={{ marginTop: '0.35rem' }} /></label>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem', margin: '1.25rem 0', textAlign: 'left' }}>
+        {plans.map(plan => <div key={plan.id} style={{ border: plan.primary ? '1.5px solid #16a34a' : '1px solid #e5e7eb', borderRadius: 12, padding: '1rem' }}>
+          <p style={{ margin: 0, fontSize: '0.78rem', fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: plan.primary ? '#16a34a' : '#374151' }}>{plan.name}</p><p style={{ margin: '0.25rem 0', fontSize: '1.75rem', fontWeight: 800 }}>{plan.price}<span style={{ fontSize: '0.85rem', color: '#6b7280', fontWeight: 500 }}>/month</span></p><p className="muted" style={{ fontSize: '0.85rem', minHeight: 40 }}>{plan.desc}</p>
+          <button className={plan.primary ? 'button button-primary' : 'button button-secondary'} style={{ width: '100%' }} disabled={Boolean(busy) || phone.trim().length < 8} onClick={() => startPayment(plan.id === 'unlimited' ? 'upgrade' : 'subscribe', plan.id === 'unlimited' ? 'unlimited' : 'basic', phone.trim())}>{busy === plan.id ? 'Processing...' : `Pay ${plan.price} with EcoCash`}</button>
+        </div>)}
+      </div>
+      {notice && <div className="auth-error" style={{ marginBottom: '0.75rem' }}>{notice}</div>}
+      {sub.test_mode && <p className="muted" style={{ fontSize: '0.85rem', marginBottom: '0.75rem' }}>Test mode is on: payments confirm instantly so you can try the flow.</p>}
+      <button className="text-button" onClick={onSignOut}><LogOut size={15} />Sign out</button>
+    </div>
+  </div>
+}
+
+function UsageRow({ label, used, allowed }: { label: string; used: number; allowed: number | null }) {
+  const pct = allowed == null ? 0 : Math.min(100, Math.round((used / allowed) * 100))
+  return <div style={{ marginBottom: '0.75rem' }}>
+    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.85rem', marginBottom: '0.25rem' }}><span>{label}</span><strong>{used} / {allowed == null ? 'Unlimited' : allowed}</strong></div>
+    {allowed != null && <div style={{ height: 8, borderRadius: 999, background: '#f3f4f6', overflow: 'hidden' }}><div style={{ width: `${Math.max(pct, 2)}%`, height: '100%', background: pct >= 100 ? '#dc2626' : '#16a34a', borderRadius: 999 }} /></div>}
+  </div>
+}
+
+function BillingPage({ sub, onPaid }: { sub: Subscription; onPaid: () => void }) {
+  const [busy, setBusy] = useState<null | string>(null)
+  const [notice, setNotice] = useState('')
+  const [phone, setPhone] = useState('')
+  const fmt = (amount: number) => `$${Number(amount).toFixed(2)}`
+  const pay = async (intent: 'subscribe' | 'upgrade' | 'extra_member', planType?: 'basic' | 'unlimited', phoneNumber?: string) => {
+    setBusy(intent); setNotice('')
+    try {
+      const result = await initiatePayment(intent, planType, phoneNumber)
+      if (result.subscription?.paid) { onPaid(); setNotice('Payment confirmed. Your plan is active.') ; return }
+      setNotice(result.message || 'Payment initiated. It will activate once confirmed, then refresh this page.')
+    } catch (err) { setNotice(err instanceof Error ? err.message : 'Unable to start payment') }
+    finally { setBusy(null) }
+  }
+  const expiry = sub.expires_at ? new Intl.DateTimeFormat('en', { month: 'short', day: 'numeric', year: 'numeric' }).format(new Date(sub.expires_at)) : '—'
+  const nearMemberLimit = sub.plan_type === 'basic' && sub.members_allowed != null && sub.members_used >= sub.members_allowed
+  return <div className="content-stack">
+    <section className="panel">
+      <div className="panel-header"><div><p className="panel-kicker">Billing</p><h3>{sub.org_name}</h3></div><span className={`status-pill ${sub.paid ? 'status-approved' : 'status-rejected'}`}><span />{sub.plan_status === 'expired' ? 'Expired' : sub.paid ? 'Active' : 'Inactive'}</span></div>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem', marginTop: '0.5rem' }}>
+        <div style={{ padding: '1rem', border: '1px solid #e5e7eb', borderRadius: 12 }}>
+          <p className="panel-kicker">Current plan</p>
+          <h2 style={{ margin: '0 0 0.25rem' }}>{sub.plan_type === 'unlimited' ? 'Unlimited' : 'Basic'} · {fmt(sub.renewal_amount)}/mo</h2>
+          <p className="muted" style={{ margin: 0 }}>Monthly · next renewal {expiry}</p>
+          {sub.plan_type === 'basic' && <button className="button button-secondary" style={{ marginTop: '0.75rem' }} disabled={Boolean(busy) || phone.trim().length < 8} onClick={() => pay('upgrade', 'unlimited', phone.trim())}>{busy === 'upgrade' ? 'Processing...' : `Upgrade to Unlimited (${fmt(sub.pricing.unlimited.price)})`}</button>}
+          <button className="button button-primary" style={{ marginTop: '0.75rem', marginLeft: sub.plan_type === 'basic' ? '0.5rem' : 0 }} disabled={Boolean(busy) || phone.trim().length < 8} onClick={() => pay('subscribe', sub.plan_type, phone.trim())}>{busy === 'subscribe' ? 'Processing...' : `Renew now (${fmt(sub.renewal_amount)})`}</button>
+        </div>
+        <div style={{ padding: '1rem', border: '1px solid #e5e7eb', borderRadius: 12 }}>
+          <p className="panel-kicker">Usage this cycle</p>
+          <UsageRow label="Team members" used={sub.members_used} allowed={sub.members_allowed} />
+          <UsageRow label="Products (SKUs)" used={sub.skus_used} allowed={sub.skus_allowed} />
+          <UsageRow label="Branches" used={sub.branches_used} allowed={sub.branches_allowed} />
+          {nearMemberLimit && <button className="button button-secondary" style={{ width: '100%' }} disabled={Boolean(busy) || phone.trim().length < 8} onClick={() => pay('extra_member', undefined, phone.trim())}>{busy === 'extra_member' ? 'Processing...' : `Add member slot (${fmt(sub.pricing.extra_member.price)})`}</button>}
+        </div>
+      </div>
+      <label style={{ display: 'block', marginTop: '1rem', maxWidth: 320 }}><span className="panel-kicker">EcoCash mobile number</span><input value={phone} onChange={event => setPhone(event.target.value.replace(/[^\d]/g, '').slice(0, 15))} placeholder="e.g. 0771234567" style={{ marginTop: '0.35rem' }} /></label>
+      {notice && <div className="auth-error" style={{ marginTop: '0.75rem' }}>{notice}</div>}
+      <p className="muted" style={{ fontSize: '0.85rem', marginBottom: 0 }}>{sub.test_mode ? 'Test mode is on: payments confirm instantly.' : 'Payments are processed with EcoCash over mobile money.'} Questions? Contact support.</p>
+    </section>
+  </div>
 }
 
 function ActivityList({ data, limit }: { data: AdminData; limit?: number }) { const logs = limit ? data.logs.slice(0, limit) : data.logs; return <div className="activity-list">{logs.map(log => <div className="activity-item" key={log.id}><div className="activity-mark"><Check size={14} /></div><div><strong>{activityLabel(log.action, log.entity_type)}</strong><span>by {displayName(log.actor_id, data)} · {formatDate(log.created_at)}</span></div><ArrowUpRight size={15} className="activity-arrow" /></div>)}</div> }
@@ -345,11 +472,14 @@ function Dialog({ title, description, onClose, children }: { title: string; desc
   return <div className="dialog-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) onClose() }}><section className="dialog" role="dialog" aria-modal="true"><div className="dialog-header"><div><p className="panel-kicker">Workspace action</p><h2>{title}</h2><p>{description}</p></div><button className="icon-button" onClick={onClose} aria-label="Close dialog"><X size={19} /></button></div>{children}</section></div>
 }
 
-function InviteDialog({ data, onClose, onCreated }: { data: AdminData; onClose: () => void; onCreated: (user: AdminData['users'][number]) => void }) {
-  const [fullName, setFullName] = useState(''); const [identifier, setIdentifier] = useState(''); const [role, setRole] = useState<'counter' | 'auditor' | 'admin' | 'seller'>('counter'); const [busy, setBusy] = useState(false); const [error, setError] = useState('')
+function InviteDialog({ data, onClose, onCreated, onPayNow }: { data: AdminData; onClose: () => void; onCreated: (user: AdminData['users'][number]) => void; onPayNow?: (intent: string, planType?: string, customerMsisdn?: string) => Promise<boolean> }) {
+  const [fullName, setFullName] = useState(''); const [identifier, setIdentifier] = useState(''); const [role, setRole] = useState<'counter' | 'auditor' | 'admin' | 'seller'>('counter'); const [busy, setBusy] = useState(false); const [paying, setPaying] = useState(false); const [error, setError] = useState(''); const [limit, setLimit] = useState<ApiError['payment'] | null>(null); const [payPhone, setPayPhone] = useState('')
   const phoneOnly = /^\+?[\d\s().-]{7,}$/.test(identifier.trim())
-  const submit = async (event: FormEvent) => { event.preventDefault(); setBusy(true); setError(''); try { onCreated(await createUser(data.org.id, { full_name: fullName, email: phoneOnly ? undefined : identifier, phone: phoneOnly ? identifier : undefined, role })) } catch (err) { setError(err instanceof Error ? err.message : 'Unable to create invitation') } finally { setBusy(false) } }
-  return <Dialog title="Invite teammate" description="Create an account for a teammate in this workspace. They sign in with the email or phone number you enter here." onClose={onClose}><form className="dialog-form" onSubmit={submit}><label>Full name<input value={fullName} onChange={event => setFullName(event.target.value)} required placeholder="Tendai Ncube" /></label><label>{phoneOnly ? 'Phone number' : 'Email or phone number'}<input type="text" value={identifier} onChange={event => setIdentifier(event.target.value)} required placeholder="tendai@shop.co or +263 77 123 4567" /></label><label>Role<select value={role} onChange={event => setRole(event.target.value as 'counter' | 'auditor' | 'admin' | 'seller')}><option value="counter">Counter</option><option value="auditor">Auditor</option><option value="seller">Seller</option><option value="admin">Admin</option></select></label>{error && <div className="auth-error">{error}</div>}<div className="dialog-actions"><button type="button" className="button button-quiet" onClick={onClose}>Cancel</button><button className="button button-primary" disabled={busy}>{busy ? 'Creating...' : 'Create invitation'}</button></div></form></Dialog>
+  const showError = (err: unknown) => { const message = err instanceof Error ? err.message : 'Unable to create invitation'; setError(message); setLimit(err instanceof ApiError && err.code === 'LIMIT_REACHED' ? err.payment ?? null : null) }
+  const doSubmit = async () => { setBusy(true); setError(''); setLimit(null); try { onCreated(await createUser(data.org.id, { full_name: fullName, email: phoneOnly ? undefined : identifier, phone: phoneOnly ? identifier : undefined, role })) } catch (err) { showError(err) } finally { setBusy(false) } }
+  const submit = async (event: FormEvent) => { event.preventDefault(); doSubmit() }
+  const fmt = (amount?: number) => `$${Number(amount ?? 0).toFixed(2)}`
+  return <Dialog title="Invite teammate" description="Create an account for a teammate in this workspace. They sign in with the email or phone number you enter here." onClose={onClose}><form className="dialog-form" onSubmit={submit}><label>Full name<input value={fullName} onChange={event => setFullName(event.target.value)} required placeholder="Tendai Ncube" /></label><label>{phoneOnly ? 'Phone number' : 'Email or phone number'}<input type="text" value={identifier} onChange={event => setIdentifier(event.target.value)} required placeholder="tendai@shop.co or +263 77 123 4567" /></label><label>Role<select value={role} onChange={event => setRole(event.target.value as 'counter' | 'auditor' | 'admin' | 'seller')}><option value="counter">Counter</option><option value="auditor">Auditor</option><option value="seller">Seller</option><option value="admin">Admin</option></select></label>{error && <div className="auth-error">{error}{limit && onPayNow && <><input value={payPhone} onChange={event => setPayPhone(event.target.value)} placeholder="EcoCash number to receive the prompt" style={{ marginTop: 8 }} /><button type="button" className="button button-primary" disabled={paying || !payPhone.trim()} style={{ marginTop: 8 }} onClick={async () => { setPaying(true); const ok = await onPayNow(limit.intent, limit.plan_type, payPhone.trim() || undefined); setPaying(false); if (ok) { setLimit(null); doSubmit() } }}>{paying ? 'Processing...' : <><Banknote size={15} />Pay {limit.label} for {fmt(limit.amount)}</>}</button></>}</div>}<div className="dialog-actions"><button type="button" className="button button-quiet" onClick={onClose}>Cancel</button><button className="button button-primary" disabled={busy}>{busy ? 'Creating...' : 'Create invitation'}</button></div></form></Dialog>
 }
 
 function EditUserDialog({ data, user, onClose, onUpdated }: { data: AdminData; user: AdminData['users'][number]; onClose: () => void; onUpdated: (user: AdminData['users'][number]) => void }) {
@@ -359,11 +489,13 @@ function EditUserDialog({ data, user, onClose, onUpdated }: { data: AdminData; u
   return <Dialog title={`Edit ${user.full_name}`} description="Change the member's role or the email/phone number they sign in with." onClose={onClose}><form className="dialog-form" onSubmit={submit}><label>Full name<input value={fullName} onChange={event => setFullName(event.target.value)} required placeholder="Tendai Ncube" /></label><label>{phoneOnly ? 'Phone number' : 'Email or phone number'}<input type="text" value={identifier} onChange={event => setIdentifier(event.target.value)} required placeholder="tendai@shop.co or +263 77 123 4567" /></label><label>Role<select value={role} onChange={event => setRole(event.target.value as 'counter' | 'auditor' | 'admin' | 'seller')}><option value="counter">Counter</option><option value="auditor">Auditor</option><option value="seller">Seller</option><option value="admin">Admin</option></select></label>{error && <div className="auth-error">{error}</div>}<div className="dialog-actions"><button type="button" className="button button-quiet" onClick={onClose}>Cancel</button><button className="button button-primary" disabled={busy}>{busy ? 'Saving...' : 'Save changes'}</button></div></form></Dialog>
 }
 
-function ItemDialog({ data, item, onClose, onCreated, onUpdated }: { data: AdminData; item?: AdminData['items'][number]; onClose: () => void; onCreated?: (item: AdminData['items'][number]) => void; onUpdated?: (item: AdminData['items'][number]) => void }) {
+function ItemDialog({ data, item, onClose, onCreated, onUpdated, onPayNow }: { data: AdminData; item?: AdminData['items'][number]; onClose: () => void; onCreated?: (item: AdminData['items'][number]) => void; onUpdated?: (item: AdminData['items'][number]) => void; onPayNow?: (intent: string, planType?: string, customerMsisdn?: string) => Promise<boolean> }) {
   const editing = Boolean(item)
-  const [name, setName] = useState(item?.name ?? ''); const [sku, setSku] = useState(item?.sku ?? ''); const [zoneId, setZoneId] = useState(item?.zone_id ?? data.zones[0]?.id ?? ''); const [unit, setUnit] = useState(item?.unit ?? 'unit'); const [quantity, setQuantity] = useState(item?.system_qty ?? 0); const [price, setPrice] = useState(item ? String(item.selling_price ?? '') : ''); const [barcode, setBarcode] = useState(item?.barcode ?? ''); const [category, setCategory] = useState(item?.category ?? ''); const [busy, setBusy] = useState(false); const [error, setError] = useState('')
-  const submit = async (event: FormEvent) => { event.preventDefault(); setBusy(true); setError(''); try { if (editing && item) { const updated = await updateItem(item.id, { name, sku, unit, zone_id: zoneId, system_qty: quantity, barcode: barcode || undefined, category: category || undefined, selling_price: price ? Number(price) : undefined }); onUpdated?.(updated) } else { onCreated?.(await createItem(data.org.id, { name, sku, zone_id: zoneId, unit, system_qty: quantity, barcode: barcode || undefined, category: category || undefined, selling_price: price ? Number(price) : undefined })) } } catch (err) { setError(err instanceof Error ? err.message : 'Unable to save item') } finally { setBusy(false) } }
-  return <Dialog title={editing ? 'Edit inventory item' : 'Add inventory item'} description={editing ? 'Update this product in the shared catalogue.' : 'Add a product to the shared catalogue before scheduling a count.'} onClose={onClose}><form className="dialog-form" onSubmit={submit}><label>Item name<input value={name} onChange={event => setName(event.target.value)} required placeholder="Sunrise Maize Meal 10kg" /></label><label>SKU<input value={sku} onChange={event => setSku(event.target.value)} required placeholder="SM-10KG" /></label><label>Unit of measurement<select value={unit} onChange={event => setUnit(event.target.value)}><option value="unit">Unit</option><option value="crate">Crate</option><option value="bottle">Bottle</option><option value="pack">Pack</option><option value="box">Box</option><option value="bag">Bag</option><option value="carton">Carton</option><option value="case">Case</option><option value="pallet">Pallet</option><option value="kg">Kilogram</option><option value="litre">Litre</option></select></label><label>Zone<select value={zoneId} onChange={event => setZoneId(event.target.value)} required>{data.zones.map(zone => <option key={zone.id} value={zone.id}>{zone.name}</option>)}</select></label><label>System quantity<input type="number" min="0" value={quantity} onChange={event => setQuantity(Number(event.target.value))} required /></label><label>Selling price<input type="number" min="0" step="0.01" value={price} onChange={event => setPrice(event.target.value)} placeholder="0.00" /></label><label>Barcode<input value={barcode} onChange={event => setBarcode(event.target.value)} placeholder="Optional" /></label><label>Category<input value={category} onChange={event => setCategory(event.target.value)} placeholder="Optional" /></label>{error && <div className="auth-error">{error}</div>}<div className="dialog-actions"><button type="button" className="button button-quiet" onClick={onClose}>Cancel</button><button className="button button-primary" disabled={busy}>{busy ? 'Saving...' : editing ? 'Save changes' : 'Add item'}</button></div></form></Dialog>
+  const [name, setName] = useState(item?.name ?? ''); const [sku, setSku] = useState(item?.sku ?? ''); const [zoneId, setZoneId] = useState(item?.zone_id ?? data.zones[0]?.id ?? ''); const [unit, setUnit] = useState(item?.unit ?? 'unit'); const [quantity, setQuantity] = useState(item?.system_qty ?? 0); const [price, setPrice] = useState(item ? String(item.selling_price ?? '') : ''); const [barcode, setBarcode] = useState(item?.barcode ?? ''); const [category, setCategory] = useState(item?.category ?? ''); const [busy, setBusy] = useState(false); const [paying, setPaying] = useState(false); const [error, setError] = useState(''); const [limit, setLimit] = useState<ApiError['payment'] | null>(null); const [payPhone, setPayPhone] = useState('')
+  const showError = (err: unknown) => { const message = err instanceof Error ? err.message : 'Unable to save item'; setError(message); setLimit(err instanceof ApiError && err.code === 'LIMIT_REACHED' ? err.payment ?? null : null) }
+  const doSubmit = async () => { setBusy(true); setError(''); setLimit(null); try { if (editing && item) { const updated = await updateItem(item.id, { name, sku, unit, zone_id: zoneId, system_qty: quantity, barcode: barcode || undefined, category: category || undefined, selling_price: price ? Number(price) : undefined }); onUpdated?.(updated) } else { onCreated?.(await createItem(data.org.id, { name, sku, zone_id: zoneId, unit, system_qty: quantity, barcode: barcode || undefined, category: category || undefined, selling_price: price ? Number(price) : undefined })) } } catch (err) { showError(err) } finally { setBusy(false) } }
+  const submit = async (event: FormEvent) => { event.preventDefault(); doSubmit() }
+  return <Dialog title={editing ? 'Edit inventory item' : 'Add inventory item'} description={editing ? 'Update this product in the shared catalogue.' : 'Add a product to the shared catalogue before scheduling a count.'} onClose={onClose}><form className="dialog-form" onSubmit={submit}><label>Item name<input value={name} onChange={event => setName(event.target.value)} required placeholder="Sunrise Maize Meal 10kg" /></label><label>SKU<input value={sku} onChange={event => setSku(event.target.value)} required placeholder="SM-10KG" /></label><label>Unit of measurement<select value={unit} onChange={event => setUnit(event.target.value)}><option value="unit">Unit</option><option value="crate">Crate</option><option value="bottle">Bottle</option><option value="pack">Pack</option><option value="box">Box</option><option value="bag">Bag</option><option value="carton">Carton</option><option value="case">Case</option><option value="pallet">Pallet</option><option value="kg">Kilogram</option><option value="litre">Litre</option></select></label><label>Zone<select value={zoneId} onChange={event => setZoneId(event.target.value)} required>{data.zones.map(zone => <option key={zone.id} value={zone.id}>{zone.name}</option>)}</select></label><label>System quantity<input type="number" min="0" value={quantity} onChange={event => setQuantity(Number(event.target.value))} required /></label><label>Selling price<input type="number" min="0" step="0.01" value={price} onChange={event => setPrice(event.target.value)} placeholder="0.00" /></label><label>Barcode<input value={barcode} onChange={event => setBarcode(event.target.value)} placeholder="Optional" /></label><label>Category<input value={category} onChange={event => setCategory(event.target.value)} placeholder="Optional" /></label>{error && <div className="auth-error">{error}{limit && onPayNow && <><input value={payPhone} onChange={event => setPayPhone(event.target.value)} placeholder="EcoCash number to receive the prompt" style={{ marginTop: 8 }} /><button type="button" className="button button-primary" disabled={paying || !payPhone.trim()} style={{ marginTop: 8 }} onClick={async () => { setPaying(true); const ok = await onPayNow(limit.intent, limit.plan_type, payPhone.trim() || undefined); setPaying(false); if (ok) { setLimit(null); doSubmit() } }}>{paying ? 'Processing...' : <><Banknote size={15} />Pay {limit.label} for ${Number(limit.amount ?? 0).toFixed(2)}</>}</button></>}</div>}<div className="dialog-actions"><button type="button" className="button button-quiet" onClick={onClose}>Cancel</button><button className="button button-primary" disabled={busy}>{busy ? 'Saving...' : editing ? 'Save changes' : 'Add item'}</button></div></form></Dialog>
 }
 
 type ImportRow = { name: string; sku: string; barcode?: string; unit: string; category?: string; selling_price?: number; system_qty: number }
@@ -474,13 +606,15 @@ function pickQuantityColumn(rows: SheetPreviewRow[], quantityColumns: string[]) 
   return best
 }
 
-function ImportDialog({ data, onClose, onCreated }: { data: AdminData; onClose: () => void; onCreated: (items: AdminData['items']) => void }) {
+function ImportDialog({ data, onClose, onCreated, onPayNow }: { data: AdminData; onClose: () => void; onCreated: (items: AdminData['items']) => void; onPayNow?: (intent: string, planType?: string, customerMsisdn?: string) => Promise<boolean> }) {
   const [zoneId, setZoneId] = useState(data.zones[0]?.id ?? '')
   const [rows, setRows] = useState<ImportRow[]>([])
   const [sheet, setSheet] = useState<ParsedSheet | null>(null)
   const [fileName, setFileName] = useState('')
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
+  const [paying, setPaying] = useState(false)
+  const [limit, setLimit] = useState<ApiError['payment'] | null>(null); const [payPhone, setPayPhone] = useState('')
   const [quantityHeader, setQuantityHeader] = useState('')
   const hasZones = data.zones.length > 0
   const readFile = async (event: ChangeEvent<HTMLInputElement>) => {
@@ -496,8 +630,10 @@ function ImportDialog({ data, onClose, onCreated }: { data: AdminData; onClose: 
       setRows(parsed.products)
     } catch (err) { setError(err instanceof Error ? err.message : 'Unable to read spreadsheet') }
   }
-  const submit = async (event: FormEvent) => { event.preventDefault(); if (!rows.length || !zoneId) return; setBusy(true); setError(''); try { const items = await createItems(data.org.id, rows.map(row => ({ ...row, zone_id: zoneId }))); if (sheet) { try { await createExcelUpload(data.org.id, { fileName: sheet.fileName, columns: sheet.columns, rowsPreview: sheet.rows.slice(0, 50), importedCount: items.length, zoneId, rawData: sheet.rows }) } catch { /* best-effort upload save */ } } onCreated(items as AdminData['items']) } catch (err) { setError(err instanceof Error ? err.message : 'Unable to import products') } finally { setBusy(false) } }
-  return <Dialog title="Import products" description="Upload an Excel or CSV file. Products will appear in Inventory and can then be selected when scheduling a count." onClose={onClose}><form className="dialog-form" onSubmit={submit}><div className="upload-dropzone"><Download size={22} /><strong>{fileName || 'Choose a spreadsheet'}</strong><small>Accepted: .xlsx, .xls, .csv. Required columns: Name and SKU.</small><label className="button button-secondary upload-button">Browse file<input type="file" accept=".xlsx,.xls,.csv" onChange={readFile} /></label></div>{!hasZones && <div className="auth-error">This workspace has no zones yet. Create a Location and a Zone in the Locations page first, then the import button will become available.</div>}{sheet && <>{hasZones && <label>Import all products into zone<select value={zoneId} onChange={event => setZoneId(event.target.value)} required>{data.zones.map(zone => <option key={zone.id} value={zone.id}>{zone.name}</option>)}</select></label>}<label>System quantity column<select value={quantityHeader} onChange={event => { setQuantityHeader(event.target.value); const selected = event.target.value; setRows(sheet.rows.map(row => ({ name: String(readSpreadsheetCell(row, NAME_COLUMN_ALIASES) ?? '').trim(), sku: String(readSpreadsheetCell(row, SKU_COLUMN_ALIASES) ?? '').trim(), barcode: String(readSpreadsheetCell(row, new Set(['barcode', 'upc', 'ean', 'gtin'])) || '').trim() || undefined, unit: String(readSpreadsheetCell(row, new Set(['unit', 'uom', 'unitofmeasure', 'measure', 'unitofmeasurement'])) || 'unit').trim(), category: String(readSpreadsheetCell(row, new Set(['category', 'department', 'group', 'class', 'brand'])) || '').trim() || undefined, selling_price: Number(String(readSpreadsheetCell(row, PRICE_COLUMN_ALIASES) ?? '').replace(/[^0-9.-]/g, '')) || 0, system_qty: Number(String(row[selected] ?? '').replace(/[^0-9.-]/g, '')) || 0 })).filter(product => product.name && product.sku)) }} required><option value="">Choose the column containing system quantity</option>{sheet.columns.map(column => <option key={column} value={column}>{column}</option>)}</select></label>{error && <div className="auth-error">{error}</div>}<div className="table-scroll" style={{ maxHeight: '240px', marginTop: '0.5rem' }}><table><thead><tr><th>Name</th><th>SKU</th><th>Qty</th></tr></thead><tbody>{rows.slice(0, 50).map((row, i) => <tr key={i}><td>{row.name}</td><td><code>{row.sku}</code></td><td>{row.system_qty}</td></tr>)}{rows.length > 50 && <tr><td colSpan={3} className="muted" style={{ textAlign: 'center' }}>...and {rows.length - 50} more rows</td></tr>}</tbody></table></div><p className="muted" style={{ marginTop: '0.5rem' }}>{rows.length} products ready to import</p></>}{error && !sheet && <div className="auth-error">{error}</div>}<div className="dialog-actions"><button type="button" className="button button-quiet" onClick={onClose}>Cancel</button><button className="button button-primary" disabled={busy || !rows.length || !zoneId}>{busy ? 'Importing...' : `Import ${rows.length} products`}</button></div></form></Dialog>
+  const showError = (err: unknown) => { const message = err instanceof Error ? err.message : 'Unable to import products'; setError(message); setLimit(err instanceof ApiError && err.code === 'LIMIT_REACHED' ? err.payment ?? null : null) }
+  const doSubmit = async () => { if (!rows.length || !zoneId) return; setBusy(true); setError(''); setLimit(null); try { const items = await createItems(data.org.id, rows.map(row => ({ ...row, zone_id: zoneId }))); if (sheet) { try { await createExcelUpload(data.org.id, { fileName: sheet.fileName, columns: sheet.columns, rowsPreview: sheet.rows.slice(0, 50), importedCount: items.length, zoneId, rawData: sheet.rows }) } catch { /* best-effort upload save */ } } onCreated(items as AdminData['items']) } catch (err) { showError(err) } finally { setBusy(false) } }
+  const submit = async (event: FormEvent) => { event.preventDefault(); doSubmit() }
+  return <Dialog title="Import products" description="Upload an Excel or CSV file. Products will appear in Inventory and can then be selected when scheduling a count." onClose={onClose}><form className="dialog-form" onSubmit={submit}><div className="upload-dropzone"><Download size={22} /><strong>{fileName || 'Choose a spreadsheet'}</strong><small>Accepted: .xlsx, .xls, .csv. Required columns: Name and SKU.</small><label className="button button-secondary upload-button">Browse file<input type="file" accept=".xlsx,.xls,.csv" onChange={readFile} /></label></div>{!hasZones && <div className="auth-error">This workspace has no zones yet. Create a Location and a Zone in the Locations page first, then the import button will become available.</div>}{sheet && <>{hasZones && <label>Import all products into zone<select value={zoneId} onChange={event => setZoneId(event.target.value)} required>{data.zones.map(zone => <option key={zone.id} value={zone.id}>{zone.name}</option>)}</select></label>}<label>System quantity column<select value={quantityHeader} onChange={event => { setQuantityHeader(event.target.value); const selected = event.target.value; setRows(sheet.rows.map(row => ({ name: String(readSpreadsheetCell(row, NAME_COLUMN_ALIASES) ?? '').trim(), sku: String(readSpreadsheetCell(row, SKU_COLUMN_ALIASES) ?? '').trim(), barcode: String(readSpreadsheetCell(row, new Set(['barcode', 'upc', 'ean', 'gtin'])) || '').trim() || undefined, unit: String(readSpreadsheetCell(row, new Set(['unit', 'uom', 'unitofmeasure', 'measure', 'unitofmeasurement'])) || 'unit').trim(), category: String(readSpreadsheetCell(row, new Set(['category', 'department', 'group', 'class', 'brand'])) || '').trim() || undefined, selling_price: Number(String(readSpreadsheetCell(row, PRICE_COLUMN_ALIASES) ?? '').replace(/[^0-9.-]/g, '')) || 0, system_qty: Number(String(row[selected] ?? '').replace(/[^0-9.-]/g, '')) || 0 })).filter(product => product.name && product.sku)) }} required><option value="">Choose the column containing system quantity</option>{sheet.columns.map(column => <option key={column} value={column}>{column}</option>)}</select></label>{error && <div className="auth-error">{error}</div>}<div className="table-scroll" style={{ maxHeight: '240px', marginTop: '0.5rem' }}><table><thead><tr><th>Name</th><th>SKU</th><th>Qty</th></tr></thead><tbody>{rows.slice(0, 50).map((row, i) => <tr key={i}><td>{row.name}</td><td><code>{row.sku}</code></td><td>{row.system_qty}</td></tr>)}{rows.length > 50 && <tr><td colSpan={3} className="muted" style={{ textAlign: 'center' }}>...and {rows.length - 50} more rows</td></tr>}</tbody></table></div><p className="muted" style={{ marginTop: '0.5rem' }}>{rows.length} products ready to import</p></>}{error && !sheet && <div className="auth-error">{error}{limit && onPayNow && <><input value={payPhone} onChange={event => setPayPhone(event.target.value)} placeholder="EcoCash number to receive the prompt" style={{ marginTop: 8 }} /><button type="button" className="button button-primary" disabled={paying || !payPhone.trim()} style={{ marginTop: 8 }} onClick={async () => { setPaying(true); const ok = await onPayNow(limit.intent, limit.plan_type, payPhone.trim() || undefined); setPaying(false); if (ok) { setLimit(null); doSubmit() } }}>{paying ? 'Processing...' : <><Banknote size={15} />Pay {limit.label} for ${Number(limit.amount ?? 0).toFixed(2)}</>}</button></>}</div>}<div className="dialog-actions"><button type="button" className="button button-quiet" onClick={onClose}>Cancel</button><button className="button button-primary" disabled={busy || !rows.length || !zoneId}>{busy ? 'Importing...' : `Import ${rows.length} products`}</button></div></form></Dialog>
 }
 
 function ThresholdConfirmDialog({ org, onYes, onNo, onClose }: { org: AdminData['org']; onYes: () => void; onNo: () => void; onClose: () => void }) {

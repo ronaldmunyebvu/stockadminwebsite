@@ -75,9 +75,172 @@ if (pool && shouldRunMigrations) {
   )`).catch(err => console.error('Migration user_sessions table failed:', err.message))
   pool.query("CREATE INDEX IF NOT EXISTS user_sessions_user_idx ON user_sessions (user_id)").catch(() => {})
   pool.query("CREATE UNIQUE INDEX IF NOT EXISTS user_sessions_active_idx ON user_sessions (user_id) WHERE revoked_at IS NULL").catch(err => console.error('Migration user_sessions unique index failed:', err.message))
+  pool.query("ALTER TABLE organizations ADD COLUMN IF NOT EXISTS plan_type text NOT NULL DEFAULT 'basic'").catch(err => console.error('Migration plan_type failed:', err.message))
+  pool.query("ALTER TABLE organizations ADD COLUMN IF NOT EXISTS plan_status text NOT NULL DEFAULT 'active'").catch(err => console.error('Migration plan_status failed:', err.message))
+  pool.query("ALTER TABLE organizations ADD COLUMN IF NOT EXISTS plan_expires_at timestamptz").catch(err => console.error('Migration plan_expires_at failed:', err.message))
+  pool.query("ALTER TABLE organizations ADD COLUMN IF NOT EXISTS plan_extra_members integer NOT NULL DEFAULT 0").catch(err => console.error('Migration plan_extra_members failed:', err.message))
+  pool.query("ALTER TABLE organizations ADD COLUMN IF NOT EXISTS plan_paid_at timestamptz").catch(err => console.error('Migration plan_paid_at failed:', err.message))
+  pool.query("UPDATE organizations SET plan_status='active', plan_expires_at=COALESCE(plan_expires_at, now() + interval '12 months') WHERE plan_status='active' AND plan_expires_at IS NULL").catch(err => console.error('Migration plan backfill failed:', err.message))
+  pool.query(`CREATE TABLE IF NOT EXISTS payments (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    org_id uuid NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    intent text NOT NULL DEFAULT 'subscribe',
+    plan_type text NOT NULL DEFAULT 'basic',
+    amount numeric NOT NULL DEFAULT 0,
+    currency text NOT NULL DEFAULT 'USD',
+    provider text NOT NULL DEFAULT 'ecocash',
+    provider_ref text,
+    status text NOT NULL DEFAULT 'pending',
+    paid_at timestamptz,
+    created_at timestamptz NOT NULL DEFAULT now()
+  )`).catch(err => console.error('Migration payments table failed:', err.message))
+  pool.query("CREATE INDEX IF NOT EXISTS payments_org_idx ON payments (org_id)").catch(() => {})
+  pool.query("ALTER TABLE payments ADD COLUMN IF NOT EXISTS customer_msisdn text").catch(() => {})
 }
 app.use(cors({ origin: true, credentials: true }))
 app.use((req, res, next) => (req.body ? next() : express.json({ limit: '5mb' })(req, res, next)))
+
+const CURRENCY = 'USD'
+const PRICING = {
+  basic: { price: 7.5, label: 'Basic', description: 'Up to 3 team members (admin + 2), 500 SKUs, 1 branch', members: 3, skus: 500, branches: 1 },
+  extra_member: { price: 2.5, label: 'Extra member slot', description: 'One additional team member for a month' },
+  unlimited: { price: 15, label: 'Unlimited', description: 'Unlimited team members, SKUs, and branches', members: null, skus: null, branches: null }
+}
+const isPaymentTestMode = () => process.env.PAYMENT_TEST_MODE === 'true' || process.env.NODE_ENV !== 'production'
+
+const ECOCASH_SANDBOX_BASE = 'https://developers.ecocash.co.zw/sandbox/payment/v1'
+function ecoCashConfig() {
+  const prod = String(process.env.ECOCASH_ENVIRONMENT || '').toLowerCase() === 'production'
+  return {
+    enabled: Boolean(process.env.ECOCASH_API_USERNAME && process.env.ECOCASH_API_PASSWORD && process.env.ECOCASH_MERCHANT_CODE && process.env.ECOCASH_MERCHANT_NUMBER && process.env.ECOCASH_MERCHANT_PIN),
+    baseUrl: (prod ? process.env.ECOCASH_PRODUCTION_BASE_URL : process.env.ECOCASH_BASE_URL) || ECOCASH_SANDBOX_BASE,
+    apiUsername: process.env.ECOCASH_API_USERNAME,
+    apiPassword: process.env.ECOCASH_API_PASSWORD,
+    merchantCode: process.env.ECOCASH_MERCHANT_CODE,
+    merchantNumber: process.env.ECOCASH_MERCHANT_NUMBER,
+    merchantPin: process.env.ECOCASH_MERCHANT_PIN,
+    notifyUrl: process.env.ECOCASH_NOTIFY_URL,
+    tranType: process.env.ECOCASH_TRAN_TYPE || 'MERCHANT',
+    operationStatus: process.env.ECOCASH_TRANSACTION_OPERATION_STATUS || 'Charged',
+    channel: process.env.ECOCASH_CHANNEL || 'Online',
+    categoryCode: process.env.ECOCASH_PURCHASE_CATEGORY_CODE || 'Online Payment',
+  }
+}
+function normalizeMsisdn(value) { const digits = String(value || '').replace(/[^\d]/g, ''); if (!digits) return ''; if (digits.startsWith('263')) return digits; if (digits.startsWith('0')) return '263' + digits.slice(1); return '263' + digits }
+function ecocashAuth(cfg) { return 'Basic ' + Buffer.from(`${cfg.apiUsername}:${cfg.apiPassword}`).toString('base64') }
+function isEcoCashSuccess(data) {
+  if (!data) return false
+  const op = String(data.transactionOperationStatus || '').toLowerCase()
+  if (['completed', 'charged', 'success', 'successful', 'paid', 'approved'].includes(op)) return true
+  const rc = String(data.responseCode ?? data.ecocashResponseCode ?? '')
+  if (data.ecocashReference && ['200', '000', '0000', '0', '00'].includes(rc)) return true
+  return false
+}
+async function ecoCashCharge({ customerMsisdn, amount, currency, clientReference, notifyUrl, description }) {
+  const cfg = ecoCashConfig()
+  if (!cfg.enabled) throw new Error('EcoCash gateway is not configured (set ECOCASH_API_* variables)')
+  const body = {
+    clientCorrelator: clientReference || crypto.randomUUID(),
+    referenceCode: clientReference || crypto.randomUUID(),
+    endUserId: normalizeMsisdn(customerMsisdn),
+    notifyUrl: notifyUrl || cfg.notifyUrl,
+    remarks: description || 'StockCount subscription',
+    transactionOperationStatus: cfg.operationStatus,
+    tranType: cfg.tranType,
+    paymentAmount: {
+      charginginformation: { amount: Number(amount).toFixed(2), currency, description: description || 'StockCount subscription' },
+      chargeMetaData: { channel: cfg.channel, purchaseCategoryCode: cfg.categoryCode, onBeHalfOf: 'StockCount' }
+    },
+    merchantCode: cfg.merchantCode,
+    merchantPin: cfg.merchantPin,
+    merchantNumber: cfg.merchantNumber,
+    currencyCode: currency,
+    countryCode: 'ZW',
+    terminalID: 'StockCount',
+    location: 'StockCount',
+    superMerchantName: 'StockCount',
+    merchantName: 'StockCount'
+  }
+  const res = await fetch(`${cfg.baseUrl.replace(/\/+$/, '')}/transactions/amount/`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: ecocashAuth(cfg) }, body: JSON.stringify(body) })
+  const text = await res.text().catch(() => '')
+  let data = null
+  try { data = text ? JSON.parse(text) : null } catch { /* non-JSON response */ }
+  if (!res.ok) throw new Error((data && (data.responseMessage || data.message || data.text)) || `EcoCash charge failed (HTTP ${res.status})`)
+  return data
+}
+const paymentPollers = new Map()
+async function pendingPaymentLookup(orgId) {
+  const cfg = ecoCashConfig()
+  if (!cfg.enabled) return
+  const row = (await pool.query("select * from payments where org_id=$1 and status='pending' order by created_at desc limit 1", [orgId])).rows[0]
+  if (!row || !row.customer_msisdn) return
+  if (Date.now() - new Date(row.created_at).getTime() > 15 * 60 * 1000) return
+  const key = 'pl:' + row.id
+  const last = paymentPollers.get(key)
+  if (last && Date.now() - last < 10000) return
+  paymentPollers.set(key, Date.now())
+  const endUser = normalizeMsisdn(row.customer_msisdn)
+  const res = await fetch(`${cfg.baseUrl.replace(/\/+$/, '')}/${encodeURIComponent(endUser)}/transactions/amount/${encodeURIComponent(row.id)}`, { headers: { Authorization: ecocashAuth(cfg) } })
+  if (!res.ok) return
+  const data = await res.json().catch(() => null)
+  if (!isEcoCashSuccess(data)) return
+  try { await confirmPayment({ id: row.id, ref: data.ecocashReference || data.serverReferenceCode || data.id || row.id }) } catch (err) { console.error('payment lookup confirm failed:', err.message) }
+}
+
+function subscriptionFromRow(org, usage) {
+  const now = new Date()
+  const expired = org.plan_expires_at && new Date(org.plan_expires_at) <= now
+  const plan_status = org.plan_status === 'active' ? (expired ? 'expired' : 'active') : 'inactive'
+  const plan_type = org.plan_type === 'unlimited' ? 'unlimited' : 'basic'
+  return {
+    org_name: org.name,
+    plan_type,
+    plan_status,
+    paid: plan_status === 'active',
+    expires_at: org.plan_expires_at ? new Date(org.plan_expires_at).toISOString() : null,
+    extra_member_slots: Number(org.plan_extra_members || 0),
+    members_allowed: plan_type === 'unlimited' ? null : PRICING.basic.members + Number(org.plan_extra_members || 0),
+    skus_allowed: plan_type === 'unlimited' ? null : PRICING.basic.skus,
+    branches_allowed: plan_type === 'unlimited' ? null : PRICING.basic.branches,
+    members_used: usage.members,
+    skus_used: usage.skus,
+    branches_used: usage.branches,
+    renewal_amount: plan_type === 'unlimited' ? PRICING.unlimited.price : PRICING.basic.price,
+    currency: CURRENCY,
+    test_mode: isPaymentTestMode(),
+    pricing: PRICING
+  }
+}
+
+async function getSubscription(orgId) {
+  const org = await pool.query('select id, name, plan_type, plan_status, plan_expires_at, plan_extra_members from organizations where id=$1', [orgId])
+  if (!org.rowCount) return null
+  const [users, items, branches] = await Promise.all([
+    pool.query('select count(*)::int as c from users where org_id=$1', [orgId]),
+    pool.query('select count(*)::int as c from items where org_id=$1', [orgId]),
+    pool.query('select count(*)::int as c from locations where org_id=$1', [orgId])
+  ])
+  return subscriptionFromRow(org.rows[0], { members: users.rows[0].c, skus: items.rows[0].c, branches: branches.rows[0].c })
+}
+
+const BILLING_OPEN_PATHS = new Set(['/api/health', '/api/auth/login', '/api/auth/logout', '/api/auth/signup', '/api/auth/admin/signup', '/api/auth/otp/send', '/api/auth/otp/verify', '/api/auth/reset-password', '/api/auth/confirm-email', '/api/auth/invite/verify', '/api/auth/invite/request', '/api/auth/invite/complete', '/api/mobile/org', '/api/payments/status', '/api/payments/initiate', '/api/payments/verify'])
+
+function requirePaid(req, res, next) {
+  const path = String(req.path || req.url).split('?')[0]
+  if (!pool || !path.startsWith('/api/') || BILLING_OPEN_PATHS.has(path)) return next()
+  const token = String(req.headers.authorization || '').replace('Bearer ', '')
+  if (!token) return next()
+  let decoded
+  try { decoded = jwt.verify(token, jwtSecret) } catch { return next() }
+  pool.query('select plan_status, plan_expires_at from organizations where id=$1', [decoded.orgId]).then(({ rows }) => {
+    const org = rows[0]
+    if (!org) return next()
+    const active = org.plan_status === 'active' && (!org.plan_expires_at || new Date(org.plan_expires_at) > new Date())
+    if (!active) return res.status(402).json({ error: 'Your shop subscription is inactive. Complete payment to unlock your shop.', code: 'SUBSCRIPTION_REQUIRED' })
+    next()
+  }).catch(() => next())
+}
+app.use(requirePaid)
 
 function requireDatabase(req, res, next) { if (!pool) return res.status(503).json({ error: 'DATABASE_URL is not configured on the server' }); next() }
 function issueToken(user, sid) { return jwt.sign({ id: user.id, orgId: user.org_id, role: user.role, email: user.email, sid }, jwtSecret, { expiresIn: '12h' }) }
@@ -155,10 +318,10 @@ app.post('/api/auth/admin/signup', requireDatabase, async (req, res) => {
     if (existingOrg.rowCount) {
       const members = await client.query('select count(*)::int as count from users where org_id=$1', [existingOrg.rows[0].id])
       if (members.rows[0].count > 0) throw new Error('A workspace with that name already exists. Choose a different shop name.')
-      await client.query('update organizations set logo_url=$1, tagline=$2, address=$3 where id=$4', [logoUrl || null, tagline ? String(tagline).trim() : null, address ? String(address).trim() : null, existingOrg.rows[0].id])
+      await client.query("update organizations set logo_url=$1, tagline=$2, address=$3, plan_status=CASE WHEN plan_status='active' AND plan_expires_at > now() THEN plan_status ELSE 'inactive' END where id=$4", [logoUrl || null, tagline ? String(tagline).trim() : null, address ? String(address).trim() : null, existingOrg.rows[0].id])
       organizationId = existingOrg.rows[0].id
     } else {
-      const org = await client.query('insert into organizations (name, logo_url, tagline, address) values ($1, $2, $3, $4) returning id', [shopName.trim(), logoUrl || null, tagline ? String(tagline).trim() : null, address ? String(address).trim() : null])
+      const org = await client.query("insert into organizations (name, logo_url, tagline, address, plan_status) values ($1, $2, $3, $4, $5) returning id", [shopName.trim(), logoUrl || null, tagline ? String(tagline).trim() : null, address ? String(address).trim() : null, 'inactive'])
       organizationId = org.rows[0].id
     }
     const passwordHash = await bcrypt.hash(password, 12)
@@ -203,10 +366,100 @@ app.post('/api/auth/reset-password', requireDatabase, async (req, res) => {
 })
 app.get('/api/auth/confirm-email', async (req, res) => { if (!pool) return res.status(503).send('Database is not configured'); const result = await pool.query('update users set email_verified = true, email_confirmation_token = null where email_confirmation_token = $1 returning email', [req.query.token]); if (!result.rowCount) return res.status(400).send('This confirmation link is invalid or expired.'); const baseUrl = process.env.PUBLIC_API_URL || `${req.protocol}://${req.get('host')}`; res.redirect(303, `${baseUrl.replace(/\/$/, '')}/?confirmed=1`) })
 app.post('/api/auth/logout', requireDatabase, auth, async (req, res) => { try { if (req.user.sid) await pool.query('update user_sessions set revoked_at = now() where id=$1 and user_id=$2', [req.user.sid, req.user.id]) } catch (err) { console.error('Logout failed:', err.message) } res.json({ ok: true }) })
-app.post('/api/auth/login', requireDatabase, async (req, res) => { const identifier = normalizeIdentifier(req.body.identifier || req.body.email); const { password, role } = req.body; const result = await pool.query(findUserByIdentifier, [identifier, identifier]); const user = result.rows[0]; if (!user || (role && user.role !== role) || !user.password_hash || !(await bcrypt.compare(password, user.password_hash))) return res.status(401).json({ error: 'Invalid credentials' }); if (!user.email_verified) return res.status(403).json({ error: 'Verify your email or phone with the code we sent before signing in' }); const active = await pool.query('select 1 from user_sessions where user_id=$1 and revoked_at is null and expires_at > now()', [user.id]); if (active.rowCount) return res.status(409).json({ error: 'This account is already signed in on another device. Sign out there first, then try again.' }); await pool.query('delete from user_sessions where user_id=$1 and (revoked_at is not null or expires_at <= now())', [user.id]); const sid = crypto.randomUUID(); const token = issueToken(user, sid); try { await pool.query('insert into user_sessions (id, user_id, org_id, token_sig, expires_at) values ($1,$2,$3,$4, now() + $5::interval)', [sid, user.id, user.org_id, crypto.createHash('sha256').update(token).digest('hex'), '12 hours']) } catch (err) { if (err.code === '23505') return res.status(409).json({ error: 'This account is already signed in on another device. Sign out there first, then try again.' }); console.error('Session create failed:', err.message); return res.status(500).json({ error: 'Unable to start a session. Please try again.' }) } res.json({ token, user: publicUser(user) }) })
+app.post('/api/auth/login', requireDatabase, async (req, res) => { const identifier = normalizeIdentifier(req.body.identifier || req.body.email); const { password, role } = req.body; const result = await pool.query(findUserByIdentifier, [identifier, identifier]); const user = result.rows[0]; if (!user || (role && user.role !== role) || !user.password_hash || !(await bcrypt.compare(password, user.password_hash))) return res.status(401).json({ error: 'Invalid credentials' }); if (!user.email_verified) return res.status(403).json({ error: 'Verify your email or phone with the code we sent before signing in' }); const active = await pool.query('select 1 from user_sessions where user_id=$1 and revoked_at is null and expires_at > now()', [user.id]); if (active.rowCount) return res.status(409).json({ error: 'This account is already signed in on another device. Sign out there first, then try again.' }); await pool.query('delete from user_sessions where user_id=$1 and (revoked_at is not null or expires_at <= now())', [user.id]); const sid = crypto.randomUUID(); const token = issueToken(user, sid); try { await pool.query('insert into user_sessions (id, user_id, org_id, token_sig, expires_at) values ($1,$2,$3,$4, now() + $5::interval)', [sid, user.id, user.org_id, crypto.createHash('sha256').update(token).digest('hex'), '12 hours']) } catch (err) { if (err.code === '23505') return res.status(409).json({ error: 'This account is already signed in on another device. Sign out there first, then try again.' }); console.error('Session create failed:', err.message); return res.status(500).json({ error: 'Unable to start a session. Please try again.' }) } res.json({ token, user: publicUser(user), subscription: await getSubscription(user.org_id) }) })
 app.post('/api/auth/invite/verify', requireDatabase, async (req, res) => { const { shopName, role, code } = req.body; const identifier = normalizeIdentifier(req.body.identifier || req.body.email); const result = await pool.query("select u.* from users u join organizations o on o.id = u.org_id where lower(o.name) = lower($1) and u.role = $3 and u.invite_code = $4 and u.is_active = true and (lower(coalesce(u.email,'')) = lower($2) or regexp_replace(coalesce(u.phone,''), '[^0-9]', '', 'g') = regexp_replace($5, '[^0-9]', '', 'g'))", [shopName, identifier, role, code, identifier]); if (!result.rowCount) return res.status(400).json({ error: 'Invalid invitation details' }); res.json({ user: publicUser(result.rows[0]) }) })
 app.post('/api/auth/invite/request', requireDatabase, async (req, res) => { const { shopName, role } = req.body; const identifier = normalizeIdentifier(req.body.identifier || req.body.email); const result = await pool.query("select u.* from users u join organizations o on o.id = u.org_id where lower(o.name) = lower($1) and u.role = $3 and u.is_active = true and u.setup_status = $4 and (lower(coalesce(u.email,'')) = lower($2) or regexp_replace(coalesce(u.phone,''), '[^0-9]', '', 'g') = regexp_replace($5, '[^0-9]', '', 'g'))", [shopName, identifier, role, 'invited', identifier]); if (!result.rowCount) return res.status(400).json({ error: 'No active invitation matches that shop, email or phone, and role' }); const code = makeCode(); await pool.query('update users set invite_code=$1 where id=$2', [code, result.rows[0].id]); const channel = await deliverCode(identifier, code, 'invitation'); res.json({ channel, code: process.env.NODE_ENV === 'production' ? undefined : code }) })
 app.post('/api/auth/invite/complete', requireDatabase, async (req, res) => { const { userId, fullName, password } = req.body; if (!userId || !fullName || !password || password.length < 6) return res.status(400).json({ error: 'Name and a password of at least 6 characters are required' }); const passwordHash = await bcrypt.hash(password, 12); const result = await pool.query('update users set full_name=$1, password_hash=$2, setup_status=$3, email_verified=true, invite_code=null where id=$4 and is_active=true and setup_status=$5 returning id,org_id,role,full_name,email,phone,is_active,setup_status,created_at', [fullName.trim(), passwordHash, 'setup_complete', userId, 'invited']); if (!result.rowCount) return res.status(400).json({ error: 'Invitation setup is no longer available' }); res.json(publicUser(result.rows[0])) })
+async function confirmPayment(payment) {
+  const client = await pool.connect()
+  try {
+    await client.query('BEGIN')
+    const existing = await client.query('select * from payments where id=$1 for update', [payment.id])
+    if (!existing.rowCount) throw new Error('Payment not found')
+    if (existing.rows[0].status === 'paid') return existing.rows[0]
+    const p = existing.rows[0]
+    await client.query("update payments set status='paid', paid_at=now(), provider_ref=$2 where id=$1", [payment.id, payment.ref])
+    if (p.intent === 'extra_member') {
+      await client.query("update organizations set plan_status='active', plan_extra_members = plan_extra_members + 1, plan_paid_at=now() where id=$1", [p.org_id])
+    } else if (p.intent === 'upgrade' || p.plan_type === 'unlimited') {
+      await client.query("update organizations set plan_type='unlimited', plan_status='active', plan_expires_at = GREATEST(COALESCE(plan_expires_at, now()), now()) + interval '1 month', plan_paid_at=now() where id=$1", [p.org_id])
+    } else {
+      await client.query("update organizations set plan_type='basic', plan_status='active', plan_expires_at = GREATEST(COALESCE(plan_expires_at, now()), now()) + interval '1 month', plan_paid_at=now() where id=$1", [p.org_id])
+    }
+    await client.query('COMMIT')
+    return { ...p, status: 'paid', paid_at: new Date(), provider_ref: payment.ref }
+  } catch (err) { await client.query('ROLLBACK'); throw err } finally { client.release() }
+}
+
+app.get('/api/payments/status', requireDatabase, auth, async (req, res) => { try { await pendingPaymentLookup(req.user.orgId) } catch { /* best effort */ } const sub = await getSubscription(req.user.orgId); if (!sub) return res.status(404).json({ error: 'Shop not found' }); res.json({ org_id: req.user.orgId, ...sub }) })
+
+app.post('/api/payments/initiate', requireDatabase, auth, async (req, res) => {
+  let intent = String(req.body.intent || 'subscribe')
+  let planType = String(req.body.plan_type || 'basic')
+  if (!['subscribe', 'upgrade', 'extra_member'].includes(intent)) intent = 'subscribe'
+  if (!['basic', 'unlimited'].includes(planType)) planType = 'basic'
+  if (planType === 'unlimited' && intent !== 'extra_member') intent = 'upgrade'
+  const amount = intent === 'extra_member' ? PRICING.extra_member.price : intent === 'upgrade' ? PRICING.unlimited.price : (planType === 'unlimited' ? PRICING.unlimited.price : PRICING.basic.price)
+  const customerMsisdn = String(req.body.customer_msisdn || req.body.customerMsisdn || '').replace(/[^\d]/g, '')
+  const eco = ecoCashConfig()
+  const payment = (await pool.query("insert into payments (org_id, intent, plan_type, amount, currency, provider, customer_msisdn) values ($1,$2,$3,$4,$5,$6,$7) returning *", [req.user.orgId, intent, planType, amount, CURRENCY, 'ecocash', customerMsisdn || null])).rows[0]
+  if (isPaymentTestMode() && !eco.enabled) {
+    try { await confirmPayment({ id: payment.id, ref: `TEST-${Date.now()}` }) } catch (err) { return res.status(500).json({ error: err.message }) }
+    const paid = (await pool.query('select * from payments where id=$1', [payment.id])).rows[0]
+    const subscription = await getSubscription(req.user.orgId)
+    return res.status(201).json({ test_mode: true, payment: paid, subscription })
+  }
+  if (!eco.enabled) return res.status(503).json({ error: 'The EcoCash gateway is not configured yet (set ECOCASH_API_* variables).' })
+  if (!customerMsisdn) return res.status(400).json({ error: 'Enter the EcoCash mobile number that should receive the payment request.' })
+  let charge
+  try {
+    charge = await ecoCashCharge({ customerMsisdn, amount, currency: CURRENCY, clientReference: payment.id, notifyUrl: eco.notifyUrl, description: `StockCount ${intent === 'upgrade' ? 'Unlimited upgrade' : intent === 'extra_member' ? 'Extra member slot' : 'subscription'}` })
+  } catch (err) {
+    await pool.query("update payments set status='failed', provider_ref=$1 where id=$2", [String(err.message).slice(0, 300), payment.id])
+    return res.status(502).json({ error: err.message })
+  }
+  if (isEcoCashSuccess(charge)) {
+    try { await confirmPayment({ id: payment.id, ref: charge.ecocashReference || charge.serverReferenceCode || payment.id }) } catch (err) { return res.status(500).json({ error: err.message }) }
+    const paid = (await pool.query('select * from payments where id=$1', [payment.id])).rows[0]
+    const subscription = await getSubscription(req.user.orgId)
+    return res.status(201).json({ test_mode: isPaymentTestMode(), payment: paid, subscription })
+  }
+  if (charge.ecocashReference || charge.serverReferenceCode) await pool.query('update payments set provider_ref=$1 where id=$2', [charge.ecocashReference || charge.serverReferenceCode, payment.id])
+  res.status(202).json({ test_mode: isPaymentTestMode(), status: 'pending', pending: true, payment, message: `An EcoCash payment request was sent to ${normalizeMsisdn(customerMsisdn)}. Approve it on your phone to unlock your shop.` })
+})
+
+app.post('/api/payments/verify', requireDatabase, async (req, res) => {
+  const body = req.body || {}
+  const webhookSecret = process.env.PAYMENT_WEBHOOK_SECRET
+  const paymentIdRaw = String(body.paymentId || body.payment_id || body.clientCorrelator || body.referenceCode || body.id || body.transactionId || '').replace(/[^\w-]/g, '')
+  const payment = paymentIdRaw ? (await pool.query('select * from payments where id=$1', [paymentIdRaw])).rows[0] : null
+  if (!payment) { res.json({ ok: true, status: 'ignored' }); return }
+  if (body.secret) {
+    if (!webhookSecret || body.secret !== webhookSecret) return res.status(403).json({ error: 'Invalid webhook secret' })
+    if (body.status && String(body.status).toLowerCase() !== 'success') { await pool.query("update payments set status='failed' where id=$1", [payment.id]); return res.json({ ok: true, status: 'failed' }) }
+    if (body.amount !== undefined && Number(body.amount) !== Number(payment.amount)) return res.status(400).json({ error: 'Amount mismatch' })
+    let paid
+    try { paid = await confirmPayment({ id: payment.id, ref: body.transactionId || payment.provider_ref || payment.id }) } catch (err) { return res.status(400).json({ error: err.message }) }
+    const subscription = await getSubscription(payment.org_id)
+    return res.json({ ok: true, payment: paid, subscription })
+  }
+  const eco = ecoCashConfig()
+  if (!eco.enabled || !payment.customer_msisdn) { res.json({ ok: true, status: 'ignored' }); return }
+  if (body.amount !== undefined && Number(body.amount) !== Number(payment.amount)) { res.json({ ok: true, status: 'ignored' }); return }
+  if (isEcoCashSuccess(body)) {
+    const endUser = normalizeMsisdn(payment.customer_msisdn)
+    const resLookup = await fetch(`${eco.baseUrl.replace(/\/+$/, '')}/${encodeURIComponent(endUser)}/transactions/amount/${encodeURIComponent(payment.id)}`, { headers: { Authorization: ecocashAuth(eco) } }).catch(() => null)
+    const data = resLookup && resLookup.ok ? await resLookup.json().catch(() => null) : null
+    if (isEcoCashSuccess(data)) {
+      let paid
+      try { paid = await confirmPayment({ id: payment.id, ref: data.ecocashReference || data.serverReferenceCode || body.ecocashReference || payment.id }) } catch { res.json({ ok: true, status: 'pending' }); return }
+      const subscription = await getSubscription(payment.org_id)
+      return res.json({ ok: true, payment: paid, subscription })
+    }
+  }
+  res.json({ ok: true, status: 'pending' })
+})
+
 app.get('/api/admin/data', requireDatabase, auth, async (req, res) => { const id = req.user.orgId; const [org, users, locations, zones, items, sessions, logs, uploads, reports, sales] = await Promise.all([pool.query('select id,name,logo_url,tagline,address,variance_threshold_pct,variance_threshold_units from organizations where id=$1', [id]), pool.query('select id,org_id,role,full_name,email,phone,is_active,setup_status,created_at from users where org_id=$1 order by created_at', [id]), pool.query('select * from locations where org_id=$1 order by name', [id]), pool.query('select z.* from zones z join locations l on l.id=z.location_id where l.org_id=$1 order by z.name', [id]), pool.query('select * from items where org_id=$1 order by name', [id]), pool.query('select * from count_sessions where org_id=$1 order by created_at desc', [id]), pool.query('select * from audit_logs where org_id=$1 order by created_at desc limit 20', [id]), pool.query('select id,org_id,file_name,columns,rows_preview,raw_data,imported_count,zone_id,uploaded_by,created_at from excel_uploads where org_id=$1 order by created_at desc', [id]), pool.query('select r.*, u.full_name as submitted_by_name from count_reports r left join users u on u.id=r.submitted_by where r.org_id=$1 order by r.created_at desc', [id]), pool.query('select s.*, coalesce(s.item_name, i.name) as item_name, i.sku, i.unit as item_unit, u.full_name as seller_name from sales s left join items i on i.id=s.item_id left join users u on u.id=s.seller_id where s.org_id=$1 order by s.sold_at desc limit 500', [id])]); res.json({ source: 'neon', org: org.rows[0], users: users.rows, locations: locations.rows, zones: zones.rows, items: items.rows, sessions: sessions.rows, logs: logs.rows, uploads: uploads.rows, reports: reports.rows, sales: sales.rows }) })
 app.get('/api/admin/sales', requireDatabase, auth, adminOnly, async (req, res) => {
   const params = [req.user.orgId]
@@ -286,14 +539,14 @@ app.patch('/api/admin/users/:id', requireDatabase, auth, adminOnly, async (req, 
 })
 app.delete('/api/admin/users/:id', requireDatabase, auth, adminOnly, async (req, res) => { if (req.params.id === req.user.id) return res.status(400).json({ error: 'You cannot delete your own account' }); const client = await pool.connect(); try { await client.query('BEGIN'); const user = await client.query('select id from users where id=$1 and org_id=$2', [req.params.id, req.user.orgId]); if (!user.rowCount) return res.status(404).json({ error: 'User not found' }); await client.query('update count_sessions set assigned_counter_id=null where assigned_counter_id=$1', [req.params.id]); await client.query('update count_sessions set assigned_counter_2_id=null where assigned_counter_2_id=$1', [req.params.id]); await client.query('update count_sessions set auditor_id=null where auditor_id=$1', [req.params.id]); await client.query('update audit_logs set actor_id=null where actor_id=$1', [req.params.id]); await client.query('update excel_uploads set uploaded_by=null where uploaded_by=$1', [req.params.id]); await client.query('update count_entries set counted_by=null where counted_by=$1', [req.params.id]); await client.query('update sales set seller_id=null where seller_id=$1', [req.params.id]); const result = await client.query('delete from users where id=$1 and org_id=$2', [req.params.id, req.user.orgId]); await client.query('COMMIT'); res.json({ success: true }) } catch (error) { await client.query('ROLLBACK'); res.status(500).json({ error: `Unable to delete user: ${error.message}` }) } finally { client.release() } })
 app.patch('/api/admin/organizations/:id/thresholds', requireDatabase, auth, adminOnly, async (req, res) => { const result = await pool.query('update organizations set variance_threshold_pct=$1, variance_threshold_units=$2 where id=$3 and id=$4 returning id,name,variance_threshold_pct,variance_threshold_units', [req.body.pct, req.body.units, req.params.id, req.user.orgId]); res.json(result.rows[0]) })
-app.post('/api/admin/users', requireDatabase, auth, adminOnly, async (req, res) => { try { const { full_name, role, phone } = req.body; const contact = normalizeIdentifier(req.body.email || req.body.identifier); if (!full_name || !contact || !role) return res.status(400).json({ error: 'Name, email or phone, and role are required' }); if (!['admin', 'counter', 'auditor', 'seller'].includes(role)) return res.status(400).json({ error: 'Role must be admin, counter, auditor, or seller' }); const phoneOnly = isPhoneIdentifier(contact); const existing = await pool.query(phoneOnly ? "select id from users where org_id=$1 and regexp_replace(coalesce(phone,''), '[^0-9]', '', 'g') = regexp_replace($2, '[^0-9]', '', 'g')" : 'select id from users where org_id=$1 and lower(email)=lower($2)', [req.user.orgId, contact]); if (existing.rowCount) return res.status(400).json({ error: 'That email or phone is already a member of this shop' }); const code = makeCode(); const result = await pool.query('insert into users (org_id,full_name,email,role,phone,is_active,setup_status,invite_code,email_verified) values ($1,$2,$3,$4,$5,true,\'invited\',$6,true) returning id,org_id,role,full_name,email,phone,is_active,setup_status,created_at', [req.user.orgId, full_name.trim(), phoneOnly ? null : contact.toLowerCase(), role, phoneOnly ? contact : phone || null, code]); try { const channel = await deliverCode(contact, code, 'invitation'); res.status(201).json({ ...result.rows[0], channel, code: process.env.NODE_ENV === 'production' ? undefined : code }) } catch (error) { console.error('Invite code delivery failed:', error.message); res.status(201).json({ ...result.rows[0], channel: null, code: process.env.NODE_ENV === 'production' ? undefined : code }) } } catch (error) { if (error.code === '23505') return res.status(400).json({ error: 'A user with that email or phone already exists' }); res.status(500).json({ error: 'Failed to create user' }) } })
+app.post('/api/admin/users', requireDatabase, auth, adminOnly, async (req, res) => { try { const sub = await getSubscription(req.user.orgId); if (sub && sub.plan_type !== 'unlimited' && sub.members_used >= sub.members_allowed) return res.status(403).json({ error: `Your Basic plan includes ${sub.members_allowed} team members. Pay $${PRICING.extra_member.price.toFixed(2)} to add another member.`, code: 'LIMIT_REACHED', payment: { intent: 'extra_member', amount: PRICING.extra_member.price, label: 'Add another member slot' } }); const { full_name, role, phone } = req.body; const contact = normalizeIdentifier(req.body.email || req.body.identifier); if (!full_name || !contact || !role) return res.status(400).json({ error: 'Name, email or phone, and role are required' }); if (!['admin', 'counter', 'auditor', 'seller'].includes(role)) return res.status(400).json({ error: 'Role must be admin, counter, auditor, or seller' }); const phoneOnly = isPhoneIdentifier(contact); const existing = await pool.query(phoneOnly ? "select id from users where org_id=$1 and regexp_replace(coalesce(phone,''), '[^0-9]', '', 'g') = regexp_replace($2, '[^0-9]', '', 'g')" : 'select id from users where org_id=$1 and lower(email)=lower($2)', [req.user.orgId, contact]); if (existing.rowCount) return res.status(400).json({ error: 'That email or phone is already a member of this shop' }); const code = makeCode(); const result = await pool.query('insert into users (org_id,full_name,email,role,phone,is_active,setup_status,invite_code,email_verified) values ($1,$2,$3,$4,$5,true,\'invited\',$6,true) returning id,org_id,role,full_name,email,phone,is_active,setup_status,created_at', [req.user.orgId, full_name.trim(), phoneOnly ? null : contact.toLowerCase(), role, phoneOnly ? contact : phone || null, code]); try { const channel = await deliverCode(contact, code, 'invitation'); res.status(201).json({ ...result.rows[0], channel, code: process.env.NODE_ENV === 'production' ? undefined : code }) } catch (error) { console.error('Invite code delivery failed:', error.message); res.status(201).json({ ...result.rows[0], channel: null, code: process.env.NODE_ENV === 'production' ? undefined : code }) } } catch (error) { if (error.code === '23505') return res.status(400).json({ error: 'A user with that email or phone already exists' }); res.status(500).json({ error: 'Failed to create user' }) } })
 app.patch('/api/admin/items/:id', requireDatabase, auth, adminOnly, async (req, res) => { const { name, sku, unit, zone_id, system_qty, barcode, category, selling_price } = req.body; const current = await pool.query('select * from items where id=$1 and org_id=$2', [req.params.id, req.user.orgId]); if (!current.rowCount) return res.status(404).json({ error: 'Product not found' }); const item = current.rows[0]; if (sku && String(sku).trim() && sku !== item.sku) { const clash = await pool.query('select id from items where org_id=$1 and sku=$2 and id<>$3', [req.user.orgId, sku, req.params.id]); if (clash.rowCount) return res.status(400).json({ error: 'SKU already exists in this inventory' }) } const result = await pool.query('update items set name=$1, sku=$2, unit=$3, zone_id=$4, system_qty=$5, barcode=$6, category=$7, selling_price=$8, updated_at=now() where id=$9 and org_id=$10 returning *', [name ?? item.name, sku ?? item.sku, unit ?? item.unit, zone_id ?? item.zone_id, system_qty ?? item.system_qty, barcode ?? item.barcode, category ?? item.category, selling_price ?? item.selling_price, req.params.id, req.user.orgId]); res.json(result.rows[0]) })
 app.delete('/api/admin/items/:id', requireDatabase, auth, adminOnly, async (req, res) => { const client = await pool.connect(); try { await client.query('BEGIN'); const item = await client.query('select * from items where id=$1 and org_id=$2', [req.params.id, req.user.orgId]); if (!item.rowCount) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Product not found' }) } await client.query('update sales set item_name=coalesce(item_name, $1), item_id=null where item_id=$2', [item.rows[0].name, req.params.id]); await client.query('delete from count_entries where item_id=$1', [req.params.id]); await client.query('delete from items where id=$1', [req.params.id]); await client.query('COMMIT'); res.json({ success: true }) } catch (error) { await client.query('ROLLBACK'); res.status(500).json({ error: `Unable to delete product: ${error.message}` }) } finally { client.release() } })
 app.delete('/api/admin/inventory', requireDatabase, auth, adminOnly, async (req, res) => { const client = await pool.connect(); try { await client.query('BEGIN'); const confirm = String(req.body.confirm || '').trim(); if (confirm !== 'DELETE') { await client.query('ROLLBACK'); return res.status(400).json({ error: 'Type DELETE to confirm' }) } await client.query('update sales s set item_name = coalesce(s.item_name, i.name), item_id = null from items i where s.item_id = i.id and s.org_id = $1', [req.user.orgId]); await client.query('delete from count_entries where item_id in (select id from items where org_id=$1)', [req.user.orgId]); const result = await client.query('delete from items where org_id=$1', [req.user.orgId]); await client.query('COMMIT'); res.json({ success: true, deleted: result.rowCount }) } catch (error) { await client.query('ROLLBACK'); res.status(500).json({ error: `Unable to delete inventory: ${error.message}` }) } finally { client.release() } })
 app.patch('/api/admin/organization', requireDatabase, auth, adminOnly, async (req, res) => { const fields = []; const values = []; if (req.body.name !== undefined) { values.push(String(req.body.name).trim()); fields.push(`name=$${values.length}`) } if (req.body.tagline !== undefined) { values.push(req.body.tagline ? String(req.body.tagline).trim() : null); fields.push(`tagline=$${values.length}`) } if (req.body.logo_url !== undefined) { values.push(req.body.logo_url || null); fields.push(`logo_url=$${values.length}`) } if (req.body.address !== undefined) { values.push(req.body.address ? String(req.body.address).trim() : null); fields.push(`address=$${values.length}`) } if (!fields.length) return res.status(400).json({ error: 'Nothing to update' }); values.push(req.user.orgId); const result = await pool.query(`update organizations set ${fields.join(', ')} where id=$${values.length} returning id, name, logo_url, tagline, address, variance_threshold_pct, variance_threshold_units, created_at`, values); res.json(result.rows[0]) })
-app.post('/api/admin/locations', requireDatabase, auth, adminOnly, async (req, res) => { const { name, type, address } = req.body; if (!String(name || '').trim() || !['warehouse', 'store', 'site'].includes(type)) return res.status(400).json({ error: 'A location name and type (warehouse, store, or site) are required' }); const result = await pool.query('insert into locations (org_id,name,type,address) values ($1,$2,$3,$4) returning *', [req.user.orgId, String(name).trim(), type, String(address || '').trim() || null]); res.status(201).json(result.rows[0]) })
+app.post('/api/admin/locations', requireDatabase, auth, adminOnly, async (req, res) => { const { name, type, address } = req.body; if (!String(name || '').trim() || !['warehouse', 'store', 'site'].includes(type)) return res.status(400).json({ error: 'A location name and type (warehouse, store, or site) are required' }); const sub = await getSubscription(req.user.orgId); if (sub && sub.plan_type !== 'unlimited' && sub.branches_used >= sub.branches_allowed) return res.status(403).json({ error: `Your Basic plan includes ${sub.branches_allowed} branch. Upgrade to the $${PRICING.unlimited.price} Unlimited plan to add more branches.`, code: 'LIMIT_REACHED', payment: { intent: 'upgrade', plan_type: 'unlimited', amount: PRICING.unlimited.price, label: 'Upgrade to Unlimited' } }); const result = await pool.query('insert into locations (org_id,name,type,address) values ($1,$2,$3,$4) returning *', [req.user.orgId, String(name).trim(), type, String(address || '').trim() || null]); res.status(201).json(result.rows[0]) })
 app.post('/api/admin/zones', requireDatabase, auth, adminOnly, async (req, res) => { const { location_id, name, code } = req.body; if (!location_id || !String(name || '').trim()) return res.status(400).json({ error: 'A location and zone name are required' }); const location = await pool.query('select id from locations where id=$1 and org_id=$2', [location_id, req.user.orgId]); if (!location.rowCount) return res.status(404).json({ error: 'Location not found' }); const result = await pool.query('insert into zones (location_id,name,code) values ($1,$2,$3) returning *', [location_id, String(name).trim(), String(code || '').trim() || null]); res.status(201).json(result.rows[0]) })
-app.post('/api/admin/items', requireDatabase, auth, adminOnly, async (req, res) => { const rows = Array.isArray(req.body.items) ? req.body.items : [req.body]; const values = []; const placeholders = rows.map((item, i) => { const offset = i * 9; values.push(req.user.orgId, item.zone_id, item.name, item.sku, item.unit || 'unit', item.system_qty || 0, item.barcode || null, item.category || null, item.selling_price || 0); return `($${offset + 1},$${offset + 2},$${offset + 3},$${offset + 4},$${offset + 5},$${offset + 6},$${offset + 7},$${offset + 8},$${offset + 9})` }).join(','); const result = await pool.query(`insert into items (org_id,zone_id,name,sku,unit,system_qty,barcode,category,selling_price) values ${placeholders} returning *`, values); res.status(201).json(result.rows) })
+app.post('/api/admin/items', requireDatabase, auth, adminOnly, async (req, res) => { const rows = Array.isArray(req.body.items) ? req.body.items : [req.body]; const sub = await getSubscription(req.user.orgId); if (sub && sub.plan_type !== 'unlimited' && rows.length && sub.skus_used + rows.length > sub.skus_allowed) return res.status(403).json({ error: `Your Basic plan allows up to ${sub.skus_allowed} SKUs. Upgrade to the $${PRICING.unlimited.price} Unlimited plan to store more products.`, code: 'LIMIT_REACHED', payment: { intent: 'upgrade', plan_type: 'unlimited', amount: PRICING.unlimited.price, label: 'Upgrade to Unlimited' } }); const values = []; const placeholders = rows.map((item, i) => { const offset = i * 9; values.push(req.user.orgId, item.zone_id, item.name, item.sku, item.unit || 'unit', item.system_qty || 0, item.barcode || null, item.category || null, item.selling_price || 0); return `($${offset + 1},$${offset + 2},$${offset + 3},$${offset + 4},$${offset + 5},$${offset + 6},$${offset + 7},$${offset + 8},$${offset + 9})` }).join(','); const result = await pool.query(`insert into items (org_id,zone_id,name,sku,unit,system_qty,barcode,category,selling_price) values ${placeholders} returning *`, values); res.status(201).json(result.rows) })
 app.post('/api/admin/excel-uploads', requireDatabase, auth, adminOnly, async (req, res) => { const { fileName, columns, rowsPreview, importedCount, zoneId, rawData } = req.body; if (!fileName) return res.status(400).json({ error: 'File name is required' }); const result = await pool.query('insert into excel_uploads (org_id,file_name,columns,rows_preview,imported_count,zone_id,uploaded_by,raw_data) values ($1,$2,$3,$4,$5,$6,$7,$8) returning id,org_id,file_name,columns,rows_preview,imported_count,zone_id,uploaded_by,created_at', [req.user.orgId, fileName, JSON.stringify(columns || []), JSON.stringify(rowsPreview || []), importedCount || 0, zoneId || null, req.user.id, JSON.stringify(rawData || [])]); res.status(201).json(result.rows[0]) })
 app.post('/api/admin/sessions', requireDatabase, auth, adminOnly, async (req, res) => { const { name, location_id, zone_id, item_ids, counter_ids, mode, auditor_id, auditor_sample_item_ids } = req.body; if (!item_ids?.length || !counter_ids?.length || item_ids.length < counter_ids.length) return res.status(400).json({ error: 'Select at least one product per counter' }); const sampleIds = Array.isArray(auditor_sample_item_ids) ? auditor_sample_item_ids : []; if (auditor_id && sampleIds.length && sampleIds.some(id => !item_ids.includes(id))) return res.status(400).json({ error: 'Auditor sample products must be among the products assigned to a counter' }); const values = []; const placeholders = counter_ids.map((counterId, index) => { const assigned = item_ids.filter((_, itemIndex) => itemIndex % counter_ids.length === index); const assignedSamples = auditor_id ? assigned.filter(id => sampleIds.includes(id)) : []; const offset = values.length; values.push(req.user.orgId, location_id || null, zone_id || null, counter_ids.length === 1 ? name : `${name} - Assignment ${index + 1}`, mode || 'blind', assigned, counterId, auditor_id || null, assignedSamples.length ? assignedSamples : null); return `($${offset + 1},$${offset + 2},$${offset + 3},$${offset + 4},$${offset + 5},$${offset + 6},$${offset + 7},$${offset + 8},$${offset + 9})` }).join(','); const result = await pool.query(`insert into count_sessions (org_id,location_id,zone_id,name,mode,item_ids,assigned_counter_id,auditor_id,auditor_sample_item_ids) values ${placeholders} returning *`, values); res.status(201).json(result.rows) })
 app.delete('/api/admin/org', requireDatabase, auth, adminOnly, async (req, res) => {
