@@ -307,11 +307,26 @@ app.post('/api/auth/admin/signup', requireDatabase, async (req, res) => {
     await client.query('BEGIN')
     transactionActive = true
     if (phoneOnly) {
-      const existing = await client.query("select id from users where regexp_replace(coalesce(phone,''), '[^0-9]', '', 'g') = $1", [contact.replace(/\D/g, '')])
-      if (existing.rowCount) throw new Error('Phone number already exists')
+      const norm = contact.replace(/\D/g, '')
+      const existing = await client.query("select u.id, u.org_id, u.email_verified from users u where regexp_replace(coalesce(u.phone,''), '[^0-9]', '', 'g') = $1", [norm])
+      for (const row of existing.rows) {
+        if (row.email_verified) throw new Error('Phone number already exists')
+        await client.query('delete from users where id=$1', [row.id])
+        if (row.org_id) {
+          const remaining = await client.query('select count(*)::int as count from users where org_id=$1', [row.org_id])
+          if (remaining.rows[0].count === 0) await client.query('delete from organizations where id=$1', [row.org_id])
+        }
+      }
     } else {
-      const existing = await client.query('select id from users where lower(email) = lower($1)', [contact.toLowerCase()])
-      if (existing.rowCount) throw new Error('Email already exists')
+      const existing = await client.query('select u.id, u.org_id, u.email_verified from users u where lower(u.email) = lower($1)', [contact.toLowerCase()])
+      for (const row of existing.rows) {
+        if (row.email_verified) throw new Error('Email already exists')
+        await client.query('delete from users where id=$1', [row.id])
+        if (row.org_id) {
+          const remaining = await client.query('select count(*)::int as count from users where org_id=$1', [row.org_id])
+          if (remaining.rows[0].count === 0) await client.query('delete from organizations where id=$1', [row.org_id])
+        }
+      }
     }
     const existingOrg = await client.query('select id from organizations where lower(name) = lower($1) for update', [shopName.trim()])
     let organizationId
@@ -645,6 +660,25 @@ app.post('/api/quotations', requireDatabase, auth, async (req, res) => {
 app.use((err, req, res, next) => {
   res.status(err.status || (err.type && 400) || 500).json({ diagnostic: true, message: err.message, type: err.type, status: err.status, body: req.body, hasBodyGetter: 'body' in req })
 })
+
+async function sweepStaleSignups() {
+  if (!pool) return
+  try {
+    const stale = await pool.query("select u.id, u.org_id from users u where u.email_verified = false and u.otp_purpose = 'signup' and u.created_at < now() - interval '24 hours'")
+    let removed = 0
+    for (const row of stale.rows) {
+      await pool.query('delete from users where id=$1', [row.id])
+      if (row.org_id) {
+        const remaining = await pool.query('select count(*)::int as count from users where org_id=$1', [row.org_id])
+        if (remaining.rows[0].count === 0) await pool.query('delete from organizations where id=$1', [row.org_id])
+      }
+      removed++
+    }
+    if (removed) console.log(`[cleanup] removed ${removed} abandoned signup(s)`)
+  } catch (err) { console.error('[cleanup] sweep failed:', err.message) }
+}
+if (pool) sweepStaleSignups()
+setInterval(sweepStaleSignups, 6 * 60 * 60 * 1000).unref()
 
 module.exports = app
 function publicUser(user) { return { id: user.id, org_id: user.org_id, role: user.role, full_name: user.full_name, email: user.email, phone: user.phone, is_active: user.is_active, setup_status: user.setup_status, created_at: user.created_at } }
