@@ -334,9 +334,10 @@ app.post('/api/auth/admin/signup', requireDatabase, async (req, res) => {
   const contact = normalizeIdentifier(identifier || phone || legacyEmail)
   const phoneOnly = isPhoneIdentifier(contact)
   if (!shopName || !fullName || !contact || !password || password.length < 6) return res.status(400).json({ error: 'Shop, name, email or phone, and a password of at least 6 characters are required' })
-  const client = await pool.connect()
+  let client
   let transactionActive = false
   try {
+    client = await pool.connect()
     await client.query('BEGIN')
     transactionActive = true
     if (phoneOnly) {
@@ -374,11 +375,23 @@ app.post('/api/auth/admin/signup', requireDatabase, async (req, res) => {
     }
     const passwordHash = await bcrypt.hash(password, 12)
     const user = await client.query('insert into users (org_id, role, full_name, email, phone, password_hash, is_active, setup_status, email_verified) values ($1, $2, $3, $4, $5, $6, true, $7, false) returning id', [organizationId, 'admin', fullName.trim(), phoneOnly ? null : contact.toLowerCase(), phoneOnly ? contact : null, passwordHash, 'setup_complete'])
+    const code = makeCode()
+    await client.query("update users set otp_code=$1, otp_expires_at=now() + interval '10 minutes', otp_purpose=$2 where id=$3", [code, 'signup', user.rows[0].id])
     await client.query('COMMIT')
     transactionActive = false
-    const otp = await issueOtp(user.rows[0], 'signup', contact)
-    res.status(201).json({ requiresOtp: true, requiresConfirmation: true, channel: otp.channel, identifier: contact, code: process.env.NODE_ENV === 'production' ? undefined : otp.code })
-  } catch (error) { if (transactionActive) await client.query('ROLLBACK'); const message = error.code === '23505' ? 'A workspace or email with those details already exists.' : error.message; res.status(400).json({ error: message }) } finally { client.release() }
+    const channel = await deliverCode(contact, code, 'signup')
+    res.status(201).json({ requiresOtp: true, requiresConfirmation: true, channel, identifier: contact, code: process.env.NODE_ENV === 'production' ? undefined : code })
+  } catch (error) {
+    if (transactionActive) {
+      try { await client.query('ROLLBACK') } catch (rollbackError) { console.error('Admin signup rollback failed:', rollbackError.message) }
+    }
+    if (/timeout exceeded when trying to connect/i.test(error.message || '')) {
+      console.error('Admin signup database timeout:', error.message)
+      return res.status(503).json({ error: 'The database is temporarily unavailable. Please try again in a few seconds.' })
+    }
+    const message = error.code === '23505' ? 'A workspace or email with those details already exists.' : error.message
+    res.status(400).json({ error: message })
+  } finally { if (client) client.release() }
 })
 app.post('/api/auth/otp/send', requireDatabase, async (req, res) => {
   const identifier = normalizeIdentifier(req.body.identifier)
@@ -691,7 +704,7 @@ app.post('/api/quotations', requireDatabase, auth, async (req, res) => {
 })
 
 app.use((err, req, res, next) => {
-  res.status(err.status || (err.type && 400) || 500).json({ diagnostic: true, message: err.message, type: err.type, status: err.status, body: req.body, hasBodyGetter: 'body' in req })
+  res.status(err.status || (err.type && 400) || 500).json({ diagnostic: true, message: err.message, type: err.type, status: err.status })
 })
 
 async function sweepStaleSignups() {
