@@ -15,7 +15,8 @@ const pool = process.env.DATABASE_URL
       connectionString: process.env.DATABASE_URL,
       ssl: { rejectUnauthorized: false },
       max: process.env.VERCEL ? 1 : 10,
-      connectionTimeoutMillis: 5000,
+      connectionTimeoutMillis: 15000,
+      query_timeout: 20000,
       idleTimeoutMillis: 30000,
       allowExitOnIdle: true
     })
@@ -23,22 +24,22 @@ const pool = process.env.DATABASE_URL
 if (pool && !process.env.VERCEL) setInterval(() => { pool.query('SELECT 1').catch(() => {}) }, 60000)
 async function runMigrations() { if (!pool || !shouldRunMigrations) return; try { await pool.query('ALTER TABLE count_sessions ALTER COLUMN location_id DROP NOT NULL'); console.log('Migration: location_id is now nullable on count_sessions') } catch (err) { if (err.code !== '42710' && err.code !== 'P0001') console.error('Migration error:', err.message) } const fkFixes = [ { table: 'count_sessions', column: 'assigned_counter_id', fk: 'count_sessions_assigned_counter_id_fkey' }, { table: 'count_sessions', column: 'assigned_counter_2_id', fk: 'count_sessions_assigned_counter_2_id_fkey' }, { table: 'count_sessions', column: 'auditor_id', fk: 'count_sessions_auditor_id_fkey' }, { table: 'audit_logs', column: 'actor_id', fk: 'audit_logs_actor_id_fkey' }, { table: 'excel_uploads', column: 'uploaded_by', fk: 'excel_uploads_uploaded_by_fkey' }, { table: 'count_entries', column: 'counted_by', fk: 'count_entries_counted_by_fkey' } ]; for (const { table, column, fk } of fkFixes) { try { if (table === 'count_entries') await pool.query(`ALTER TABLE ${table} ALTER COLUMN ${column} DROP NOT NULL`); await pool.query(`ALTER TABLE ${table} DROP CONSTRAINT IF EXISTS ${fk}`); await pool.query(`ALTER TABLE ${table} ADD CONSTRAINT ${fk} FOREIGN KEY (${column}) REFERENCES users(id) ON DELETE SET NULL`); console.log(`Migration: ${table}.${column} now ON DELETE SET NULL`) } catch (err) { if (err.code !== '42710') console.error(`Migration FK error (${fk}):`, err.message) } } try { await pool.query("CREATE TABLE IF NOT EXISTS count_reports (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), org_id uuid NOT NULL REFERENCES organizations(id) ON DELETE CASCADE, session_id uuid NOT NULL REFERENCES count_sessions(id) ON DELETE CASCADE, submitted_by uuid REFERENCES users(id) ON DELETE SET NULL, report_type text NOT NULL CHECK (report_type IN ('auditor','admin')), summary text, items_summary jsonb NOT NULL DEFAULT '[]'::jsonb, total_items int NOT NULL DEFAULT 0, matched_items int NOT NULL DEFAULT 0, variance_items int NOT NULL DEFAULT 0, status text NOT NULL DEFAULT 'draft', created_at timestamptz NOT NULL DEFAULT now(), UNIQUE(session_id))"); console.log('Migration: count_reports table ensured') } catch (err) { console.error('Migration count_reports error:', err.message) } try { await pool.query('CREATE INDEX IF NOT EXISTS reports_org_idx ON count_reports(org_id)'); } catch (err) { } try { await pool.query('ALTER TABLE count_sessions ADD COLUMN IF NOT EXISTS auditor_sample_item_ids jsonb'); console.log('Migration: auditor_sample_item_ids added') } catch (err) { console.error('Migration auditor_sample_item_ids error:', err.message) } try { await pool.query("ALTER TABLE count_entries ADD COLUMN IF NOT EXISTS entry_role text NOT NULL DEFAULT 'counter'"); console.log('Migration: entry_role added') } catch (err) { console.error('Migration entry_role error:', err.message) } try { await pool.query('ALTER TABLE count_entries ADD COLUMN IF NOT EXISTS counter_entry_id uuid'); console.log('Migration: counter_entry_id added') } catch (err) { console.error('Migration counter_entry_id error:', err.message) } try { await pool.query("DO $$ BEGIN ALTER TABLE users DROP CONSTRAINT IF EXISTS users_role_check; ALTER TABLE users ADD CONSTRAINT users_role_check CHECK (role IN ('admin','counter','auditor','seller')); EXCEPTION WHEN others THEN NULL; END $$"); console.log('Migration: seller role allowed') } catch (err) { console.error('Migration seller role error:', err.message) } try { await pool.query(`CREATE TABLE IF NOT EXISTS sales (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), org_id uuid NOT NULL REFERENCES organizations(id) ON DELETE CASCADE, item_id uuid NOT NULL REFERENCES items(id), seller_id uuid REFERENCES users(id) ON DELETE SET NULL, quantity numeric NOT NULL CHECK (quantity > 0), unit_price numeric NOT NULL DEFAULT 0, total numeric NOT NULL DEFAULT 0, sold_at timestamptz NOT NULL DEFAULT now(), created_at timestamptz NOT NULL DEFAULT now())`); console.log('Migration: sales table ensured') } catch (err) { console.error('Migration sales table error:', err.message) } try { await pool.query('CREATE INDEX IF NOT EXISTS sales_org_idx ON sales(org_id)') } catch (err) { } try { await pool.query('CREATE INDEX IF NOT EXISTS sales_sold_at_idx ON sales(sold_at)') } catch (err) { } try { await pool.query('CREATE INDEX IF NOT EXISTS sales_seller_idx ON sales(seller_id)') } catch (err) { } }
 const shouldRunMigrations = process.env.RUN_MIGRATIONS === 'true' || !process.env.VERCEL
-runMigrations()
-if (pool && shouldRunMigrations) pool.query("ALTER TABLE items ADD COLUMN IF NOT EXISTS selling_price numeric NOT NULL DEFAULT 0").catch(err => console.error('Migration selling_price failed:', err.message))
-if (pool && shouldRunMigrations) {
-  pool.query("ALTER TABLE users ALTER COLUMN email DROP NOT NULL").catch(err => console.error('Migration email nullable failed:', err.message))
-  pool.query("DO $$ BEGIN ALTER TABLE users DROP CONSTRAINT IF EXISTS users_role_check; ALTER TABLE users ADD CONSTRAINT users_role_check CHECK (role IN ('admin','counter','auditor','seller')); EXCEPTION WHEN others THEN NULL; END $$").catch(err => console.error('Migration seller role failed:', err.message))
-  pool.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS otp_code text").catch(err => console.error('Migration otp_code failed:', err.message))
-  pool.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS otp_expires_at timestamptz").catch(err => console.error('Migration otp_expires_at failed:', err.message))
-  pool.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS otp_purpose text").catch(err => console.error('Migration otp_purpose failed:', err.message))
-  pool.query("ALTER TABLE organizations ADD COLUMN IF NOT EXISTS logo_url text").catch(err => console.error('Migration logo_url failed:', err.message))
-  pool.query("ALTER TABLE organizations ADD COLUMN IF NOT EXISTS tagline text").catch(err => console.error('Migration tagline failed:', err.message))
-  pool.query("ALTER TABLE organizations ADD COLUMN IF NOT EXISTS address text").catch(err => console.error('Migration org address failed:', err.message))
-  pool.query("ALTER TABLE sales ALTER COLUMN item_id DROP NOT NULL").catch(err => console.error('Migration sales item_id nullable failed:', err.message))
-  pool.query("DO $$ BEGIN ALTER TABLE sales DROP CONSTRAINT IF EXISTS sales_item_id_fkey; ALTER TABLE sales ADD CONSTRAINT sales_item_id_fkey FOREIGN KEY (item_id) REFERENCES items(id) ON DELETE SET NULL; EXCEPTION WHEN others THEN NULL; END $$").catch(err => console.error('Migration sales fk failed:', err.message))
-  pool.query("ALTER TABLE sales ADD COLUMN IF NOT EXISTS item_name text").catch(err => console.error('Migration sales item_name failed:', err.message))
-  pool.query("UPDATE sales s SET item_name = i.name FROM items i WHERE s.item_id = i.id AND s.item_name IS NULL").catch(() => {})
-  pool.query(`CREATE TABLE IF NOT EXISTS quotations (
+runMigrations().then(runColumnMigrations).catch(err => console.error('Migration failed:', err.message))
+async function runColumnMigrations() { if (!pool || !shouldRunMigrations) return
+  await pool.query("ALTER TABLE items ADD COLUMN IF NOT EXISTS selling_price numeric NOT NULL DEFAULT 0").catch(err => console.error('Migration selling_price failed:', err.message))
+  await pool.query("ALTER TABLE users ALTER COLUMN email DROP NOT NULL").catch(err => console.error('Migration email nullable failed:', err.message))
+  await pool.query("DO $$ BEGIN ALTER TABLE users DROP CONSTRAINT IF EXISTS users_role_check; ALTER TABLE users ADD CONSTRAINT users_role_check CHECK (role IN ('admin','counter','auditor','seller')); EXCEPTION WHEN others THEN NULL; END $$").catch(err => console.error('Migration seller role failed:', err.message))
+  await pool.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS otp_code text").catch(err => console.error('Migration otp_code failed:', err.message))
+  await pool.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS otp_expires_at timestamptz").catch(err => console.error('Migration otp_expires_at failed:', err.message))
+  await pool.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS otp_purpose text").catch(err => console.error('Migration otp_purpose failed:', err.message))
+  await pool.query("ALTER TABLE organizations ADD COLUMN IF NOT EXISTS logo_url text").catch(err => console.error('Migration logo_url failed:', err.message))
+  await pool.query("ALTER TABLE organizations ADD COLUMN IF NOT EXISTS tagline text").catch(err => console.error('Migration tagline failed:', err.message))
+  await pool.query("ALTER TABLE organizations ADD COLUMN IF NOT EXISTS address text").catch(err => console.error('Migration org address failed:', err.message))
+  await pool.query("ALTER TABLE sales ALTER COLUMN item_id DROP NOT NULL").catch(err => console.error('Migration sales item_id nullable failed:', err.message))
+  await pool.query("DO $$ BEGIN ALTER TABLE sales DROP CONSTRAINT IF EXISTS sales_item_id_fkey; ALTER TABLE sales ADD CONSTRAINT sales_item_id_fkey FOREIGN KEY (item_id) REFERENCES items(id) ON DELETE SET NULL; EXCEPTION WHEN others THEN NULL; END $$").catch(err => console.error('Migration sales fk failed:', err.message))
+  await pool.query("ALTER TABLE sales ADD COLUMN IF NOT EXISTS item_name text").catch(err => console.error('Migration sales item_name failed:', err.message))
+  await pool.query("UPDATE sales s SET item_name = i.name FROM items i WHERE s.item_id = i.id AND s.item_name IS NULL").catch(() => {})
+  await pool.query(`CREATE TABLE IF NOT EXISTS quotations (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     org_id uuid NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
     seller_id uuid REFERENCES users(id) ON DELETE SET NULL,
@@ -51,7 +52,7 @@ if (pool && shouldRunMigrations) {
     valid_until date,
     created_at timestamptz NOT NULL DEFAULT now()
   )`).catch(err => console.error('Migration quotations table failed:', err.message))
-  pool.query(`CREATE TABLE IF NOT EXISTS quotation_items (
+  await pool.query(`CREATE TABLE IF NOT EXISTS quotation_items (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     quotation_id uuid NOT NULL REFERENCES quotations(id) ON DELETE CASCADE,
     item_id uuid REFERENCES items(id) ON DELETE SET NULL,
@@ -62,8 +63,8 @@ if (pool && shouldRunMigrations) {
     unit_price numeric NOT NULL DEFAULT 0,
     total numeric NOT NULL DEFAULT 0
   )`).catch(err => console.error('Migration quotation_items table failed:', err.message))
-  pool.query("CREATE INDEX IF NOT EXISTS quotations_org_idx ON quotations(org_id)").catch(() => {})
-  pool.query(`CREATE TABLE IF NOT EXISTS user_sessions (
+  await pool.query("CREATE INDEX IF NOT EXISTS quotations_org_idx ON quotations(org_id)").catch(() => {})
+  await pool.query(`CREATE TABLE IF NOT EXISTS user_sessions (
     id uuid PRIMARY KEY,
     user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     org_id uuid NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
@@ -73,15 +74,15 @@ if (pool && shouldRunMigrations) {
     last_seen_at timestamptz NOT NULL DEFAULT now(),
     revoked_at timestamptz
   )`).catch(err => console.error('Migration user_sessions table failed:', err.message))
-  pool.query("CREATE INDEX IF NOT EXISTS user_sessions_user_idx ON user_sessions (user_id)").catch(() => {})
-  pool.query("CREATE UNIQUE INDEX IF NOT EXISTS user_sessions_active_idx ON user_sessions (user_id) WHERE revoked_at IS NULL").catch(err => console.error('Migration user_sessions unique index failed:', err.message))
-  pool.query("ALTER TABLE organizations ADD COLUMN IF NOT EXISTS plan_type text NOT NULL DEFAULT 'basic'").catch(err => console.error('Migration plan_type failed:', err.message))
-  pool.query("ALTER TABLE organizations ADD COLUMN IF NOT EXISTS plan_status text NOT NULL DEFAULT 'active'").catch(err => console.error('Migration plan_status failed:', err.message))
-  pool.query("ALTER TABLE organizations ADD COLUMN IF NOT EXISTS plan_expires_at timestamptz").catch(err => console.error('Migration plan_expires_at failed:', err.message))
-  pool.query("ALTER TABLE organizations ADD COLUMN IF NOT EXISTS plan_extra_members integer NOT NULL DEFAULT 0").catch(err => console.error('Migration plan_extra_members failed:', err.message))
-  pool.query("ALTER TABLE organizations ADD COLUMN IF NOT EXISTS plan_paid_at timestamptz").catch(err => console.error('Migration plan_paid_at failed:', err.message))
-  pool.query("UPDATE organizations SET plan_status='active', plan_expires_at=COALESCE(plan_expires_at, now() + interval '12 months') WHERE plan_status='active' AND plan_expires_at IS NULL").catch(err => console.error('Migration plan backfill failed:', err.message))
-  pool.query(`CREATE TABLE IF NOT EXISTS payments (
+  await pool.query("CREATE INDEX IF NOT EXISTS user_sessions_user_idx ON user_sessions (user_id)").catch(() => {})
+  await pool.query("CREATE UNIQUE INDEX IF NOT EXISTS user_sessions_active_idx ON user_sessions (user_id) WHERE revoked_at IS NULL").catch(err => console.error('Migration user_sessions unique index failed:', err.message))
+  await pool.query("ALTER TABLE organizations ADD COLUMN IF NOT EXISTS plan_type text NOT NULL DEFAULT 'basic'").catch(err => console.error('Migration plan_type failed:', err.message))
+  await pool.query("ALTER TABLE organizations ADD COLUMN IF NOT EXISTS plan_status text NOT NULL DEFAULT 'active'").catch(err => console.error('Migration plan_status failed:', err.message))
+  await pool.query("ALTER TABLE organizations ADD COLUMN IF NOT EXISTS plan_expires_at timestamptz").catch(err => console.error('Migration plan_expires_at failed:', err.message))
+  await pool.query("ALTER TABLE organizations ADD COLUMN IF NOT EXISTS plan_extra_members integer NOT NULL DEFAULT 0").catch(err => console.error('Migration plan_extra_members failed:', err.message))
+  await pool.query("ALTER TABLE organizations ADD COLUMN IF NOT EXISTS plan_paid_at timestamptz").catch(err => console.error('Migration plan_paid_at failed:', err.message))
+  await pool.query("UPDATE organizations SET plan_status='active', plan_expires_at=COALESCE(plan_expires_at, now() + interval '12 months') WHERE plan_status='active' AND plan_expires_at IS NULL").catch(err => console.error('Migration plan backfill failed:', err.message))
+  await pool.query(`CREATE TABLE IF NOT EXISTS payments (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     org_id uuid NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
     intent text NOT NULL DEFAULT 'subscribe',
@@ -94,8 +95,8 @@ if (pool && shouldRunMigrations) {
     paid_at timestamptz,
     created_at timestamptz NOT NULL DEFAULT now()
   )`).catch(err => console.error('Migration payments table failed:', err.message))
-  pool.query("CREATE INDEX IF NOT EXISTS payments_org_idx ON payments (org_id)").catch(() => {})
-  pool.query("ALTER TABLE payments ADD COLUMN IF NOT EXISTS customer_msisdn text").catch(() => {})
+  await pool.query("CREATE INDEX IF NOT EXISTS payments_org_idx ON payments (org_id)").catch(() => {})
+  await pool.query("ALTER TABLE payments ADD COLUMN IF NOT EXISTS customer_msisdn text").catch(() => {})
 }
 app.use(cors({ origin: true, credentials: true }))
 app.use((req, res, next) => (req.body ? next() : express.json({ limit: '5mb' })(req, res, next)))
@@ -265,6 +266,11 @@ async function sendMail(to, subject, text) {
 }
 function isPhoneIdentifier(value) { return /^\+?[\d\s().-]{7,}$/.test(String(value || '').trim()) }
 function normalizeIdentifier(value) { return String(value || '').trim() }
+const omniflex = {
+  baseUrl: String(process.env.OMNIFLEX_BASE_URL || 'https://omniflex.co.zw/api').replace(/\/+$/, ''),
+  apiKey: String(process.env.OMNIFLEX_API_KEY || '').trim(),
+  senderId: String(process.env.OMNIFLEX_SENDER_ID || '').trim()
+}
 let atSms = null
 const atApiKey = process.env.AT_API_KEY
 if (atApiKey && process.env.AT_USERNAME) {
@@ -273,10 +279,37 @@ if (atApiKey && process.env.AT_USERNAME) {
     atSms = at.SMS
   } catch (err) { console.error('Africa\'s Talking SDK init failed:', err.message) }
 }
+async function sendOmniflexSms(phone, text) {
+  const payload = { phone: normalizeMsisdn(phone), message: text }
+  if (omniflex.senderId) payload.senderId = omniflex.senderId
+  const response = await fetch(`${omniflex.baseUrl}/sms/send`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${omniflex.apiKey}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+    signal: AbortSignal.timeout(10000)
+  })
+  const raw = await response.text()
+  let body = {}
+  try { body = raw ? JSON.parse(raw) : {} } catch { body = { error: raw } }
+  if (!response.ok) throw new Error(String(body.error || body.message || `HTTP ${response.status}`))
+  return body
+}
 async function sendSms(phone, text) {
-  if (!atSms) return console.log(`[SMS] -> ${phone}: ${text}`)
-  const from = process.env.AT_SENDER_ID || undefined
-  try { await atSms.send({ to: [phone], message: text, from }) } catch (err) { console.error(`[SMS] AT send failed -> ${phone}:`, err.message) }
+  if (omniflex.apiKey) {
+    try {
+      const body = await sendOmniflexSms(phone, text)
+      console.log(`[SMS] OmniFlex -> ${phone}:`, JSON.stringify(body))
+      return 'omniflex'
+    } catch (err) { console.error(`[SMS] OmniFlex send failed -> ${phone}:`, err.message) }
+  } else {
+    console.log('[SMS] OMNIFLEX_API_KEY is not set - get one from OmniFlex Settings -> Developer Keys.')
+  }
+  if (atSms) {
+    const from = process.env.AT_SENDER_ID || undefined
+    try { await atSms.send({ to: [phone], message: text, from }); return 'africastalking' } catch (err) { console.error(`[SMS] AT send failed -> ${phone}:`, err.message) }
+  }
+  console.log(`[SMS] -> ${phone}: ${text}`)
+  return 'console'
 }
 async function deliverCode(identifier, code, purpose) {
   console.log(`[OTP] purpose=${purpose} identifier=${identifier} code=${code}`)

@@ -2,7 +2,21 @@
 import type { AdminData, CountEntry, CountReport, CountSession, Item, Location, PaymentRecord, SalesSummary, Subscription, User, Zone } from './types'
 
 const configuredUrl = (import.meta.env.VITE_API_URL as string | undefined)?.trim().replace(/\/+$/, '').replace(/\/api$/, '')
-export const apiUrl = configuredUrl || '/api'
+const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]', '::1'])
+
+function resolveApiUrl(): string {
+  if (!configuredUrl) return '/api'
+  try {
+    const target = new URL(configuredUrl)
+    const servedLocally = LOCAL_HOSTS.has(window.location.hostname)
+    if (LOCAL_HOSTS.has(target.hostname) && !servedLocally) return '/api'
+    return configuredUrl
+  } catch {
+    return '/api'
+  }
+}
+
+export const apiUrl = resolveApiUrl()
 export const isNeonConfigured = true
 
 function token() { return localStorage.getItem('ClickCount_admin_token') }
@@ -22,10 +36,18 @@ export class ApiError extends Error {
 
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   if (!apiUrl) throw new Error('VITE_API_URL is not configured')
-  const response = await fetch(apiUrl === '/api' ? path : `${apiUrl}${path}`, { ...options, headers: { 'Content-Type': 'application/json', ...(token() ? { Authorization: `Bearer ${token()}` } : {}), ...options.headers } })
+  const url = apiUrl === '/api' ? path : `${apiUrl}${path}`
+  let response: Response
+  try {
+    response = await fetch(url, { ...options, headers: { 'Content-Type': 'application/json', ...(token() ? { Authorization: `Bearer ${token()}` } : {}), ...options.headers } })
+  } catch {
+    throw new ApiError(apiUrl === '/api'
+      ? 'Could not reach the ClickCount server. Check your internet connection, then try again.'
+      : `Could not reach the API at ${apiUrl}. Make sure the API server is running.`, 0, 'NETWORK')
+  }
   const text = await response.text()
   let body: Record<string, unknown>
-  try { body = text ? JSON.parse(text) : {} } catch { body = { error: text ? `${text} (${response.status})` : `Request failed (${response.status})` } }
+  try { body = text ? JSON.parse(text) : {} } catch { body = { error: text ? `${text.slice(0, 300)} (${response.status})` : `Request failed (${response.status})` } }
   if (!response.ok) throw new ApiError(String(body.error || `Request failed (${response.status})`), response.status, typeof body.code === 'string' ? body.code : undefined, typeof body.payment === 'object' && body.payment ? body.payment as ApiError['payment'] : undefined)
   return body as T
 }
