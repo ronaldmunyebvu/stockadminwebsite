@@ -45,6 +45,7 @@ const shouldRunMigrations = process.env.RUN_MIGRATIONS === 'true' || !process.en
 runMigrations().then(runColumnMigrations).catch(err => console.error('Migration failed:', err.message))
 async function runColumnMigrations() { if (!pool || !shouldRunMigrations) return
   await pool.query("ALTER TABLE items ADD COLUMN IF NOT EXISTS selling_price numeric NOT NULL DEFAULT 0").catch(err => console.error('Migration selling_price failed:', err.message))
+  await pool.query("ALTER TABLE items ALTER COLUMN zone_id DROP NOT NULL").then(() => console.log('Migration: items.zone_id is now nullable')).catch(err => console.error('Migration items zone_id nullable failed:', err.message))
   await pool.query("ALTER TABLE users ALTER COLUMN email DROP NOT NULL").catch(err => console.error('Migration email nullable failed:', err.message))
   await pool.query("DO $$ BEGIN ALTER TABLE users DROP CONSTRAINT IF EXISTS users_role_check; ALTER TABLE users ADD CONSTRAINT users_role_check CHECK (role IN ('admin','counter','auditor','seller')); EXCEPTION WHEN others THEN NULL; END $$").catch(err => console.error('Migration seller role failed:', err.message))
   await pool.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS otp_code text").catch(err => console.error('Migration otp_code failed:', err.message))
