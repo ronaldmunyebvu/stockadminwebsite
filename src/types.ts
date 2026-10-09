@@ -17,11 +17,12 @@ export interface SalesSummary { total_revenue: number; total_sales: number; tota
 export interface AdminData { org: { id: string; name: string; variance_threshold_pct: number; variance_threshold_units: number; logo_url?: string | null; tagline?: string | null; address?: string | null }; users: User[]; locations: Location[]; zones: Zone[]; items: Item[]; sessions: CountSession[]; logs: AuditLog[]; uploads: ExcelUpload[]; sales?: Sale[]; source: 'demo' | 'neon' }
 
 export interface PlanInfo { price: number; label: string; description: string; members: number | null; skus: number | null; branches: number | null }
+export type PlanType = 'basic' | 'standard' | 'unlimited'
 export type ShopStatus = 'pending' | 'active' | 'expired' | 'inactive'
 export interface Subscription {
   org_id?: string
   org_name: string
-  plan_type: 'basic' | 'unlimited'
+  plan_type: PlanType
   plan_status: ShopStatus
   status: ShopStatus
   paid: boolean
@@ -38,5 +39,5 @@ export interface Subscription {
   branches_used: number
   renewal_amount: number
   currency: string
-  pricing: { basic: PlanInfo; extra_member: PlanInfo; unlimited: PlanInfo }
+  pricing: { basic: PlanInfo; standard: PlanInfo; extra_member: PlanInfo; unlimited: PlanInfo }
 }

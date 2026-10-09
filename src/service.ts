@@ -1,5 +1,5 @@
 ﻿import { demoData } from './data'
-import type { AdminData, CountEntry, CountReport, CountSession, Item, Location, SalesSummary, Subscription, User, Zone } from './types'
+import type { AdminData, CountEntry, CountReport, CountSession, Item, Location, PlanType, SalesSummary, Subscription, User, Zone } from './types'
 
 const configuredUrl = (import.meta.env.VITE_API_URL as string | undefined)?.trim().replace(/\/+$/, '').replace(/\/api$/, '')
 const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]', '::1'])
@@ -72,8 +72,9 @@ function demoSubscription(): Subscription {
     currency: 'USD',
     pricing: {
       basic: { price: 7.5, label: 'Basic', description: 'Up to 3 team members, 500 SKUs, 1 branch', members: 3, skus: 500, branches: 1 },
+      standard: { price: 15, label: 'Standard', description: 'Up to 10 team members, 10,000 SKUs, 3 branches', members: 10, skus: 10000, branches: 3 },
       extra_member: { price: 2.5, label: 'Extra member slot', description: 'One additional team member for a month', members: null, skus: null, branches: null },
-      unlimited: { price: 15, label: 'Unlimited', description: 'Unlimited team members, SKUs, and branches', members: null, skus: null, branches: null }
+      unlimited: { price: 30, label: 'Unlimited', description: 'Unlimited team members, SKUs, and branches', members: null, skus: null, branches: null }
     }
   }
 }
@@ -85,8 +86,8 @@ export async function signInAdmin(identifier: string, password: string) {
   return { user: result.user, profile: result.user, subscription: result.subscription }
 }
 export async function getPaymentStatus(): Promise<Subscription> { return apiUrl ? request<Subscription>('/api/billing/status') : demoSubscription() }
-export async function submitBillingRequest(planType: 'basic' | 'unlimited'): Promise<{ ok: boolean; message: string; subscription: Subscription }> { return apiUrl ? request<{ ok: boolean; message: string; subscription: Subscription }>('/api/billing/request', { method: 'POST', body: JSON.stringify({ plan_type: planType }) }) : { ok: true, message: 'Your request has been submitted.', subscription: demoSubscription() } }
-export async function createShopAdmin(shopName: string, fullName: string, identifier: string, password: string, logoUrl?: string, address?: string, planType: 'basic' | 'unlimited' = 'basic') { if (!apiUrl) return { user: { id: 'demo-admin', email: identifier }, profile: { ...demoData.users[0], full_name: fullName, email: identifier } }; return request<{ requiresOtp: true; requiresConfirmation: true; channel: 'sms' | 'email'; identifier: string; code?: string }>('/api/auth/admin/signup', { method: 'POST', body: JSON.stringify({ shopName, fullName, identifier, password, logoUrl: logoUrl || null, address: address || null, planType }) }) }
+export async function submitBillingRequest(planType: PlanType): Promise<{ ok: boolean; message: string; subscription: Subscription }> { return apiUrl ? request<{ ok: boolean; message: string; subscription: Subscription }>('/api/billing/request', { method: 'POST', body: JSON.stringify({ plan_type: planType }) }) : { ok: true, message: 'Your request has been submitted.', subscription: demoSubscription() } }
+export async function createShopAdmin(shopName: string, fullName: string, identifier: string, password: string, logoUrl?: string, address?: string) { if (!apiUrl) return { user: { id: 'demo-admin', email: identifier }, profile: { ...demoData.users[0], full_name: fullName, email: identifier } }; return request<{ requiresOtp: true; requiresConfirmation: true; channel: 'sms' | 'email'; identifier: string; code?: string }>('/api/auth/admin/signup', { method: 'POST', body: JSON.stringify({ shopName, fullName, identifier, password, logoUrl: logoUrl || null, address: address || null }) }) }
 export async function sendOtp(identifier: string, purpose = 'reset') { if (!apiUrl) return { ok: true, channel: 'email' as const, code: '123456' }; return request<{ ok: true; channel: 'sms' | 'email'; code?: string }>('/api/auth/otp/send', { method: 'POST', body: JSON.stringify({ identifier, purpose }) }) }
 export async function verifyOtp(identifier: string, code: string, purpose = 'reset') { if (apiUrl) return request<{ ok: true }>('/api/auth/otp/verify', { method: 'POST', body: JSON.stringify({ identifier, code, purpose }) }) }
 export async function resetPassword(identifier: string, code: string, password: string) { if (apiUrl) return request<{ ok: true }>('/api/auth/reset-password', { method: 'POST', body: JSON.stringify({ identifier, code, password }) }) }
