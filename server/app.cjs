@@ -266,7 +266,7 @@ async function issueOtp(user, purpose, identifier) {
   const channel = await deliverCode(identifier, code, purpose)
   return { channel, code }
 }
-const findUserByIdentifier = "select u.* from users u where u.is_active = true and (lower(coalesce(u.email,'')) = lower($1) or regexp_replace(coalesce(u.phone,''), '[^0-9]', '', 'g') = regexp_replace($2, '[^0-9]', '', 'g'))"
+const findUserByIdentifier = "select u.* from users u where u.is_active = true and ((lower(coalesce(u.email,'')) = lower($1) and $1 <> '') or (regexp_replace(coalesce(u.phone,''), '[^0-9]', '', 'g') = regexp_replace($2, '[^0-9]', '', 'g') and regexp_replace($2, '[^0-9]', '', 'g') <> ''))"
 
 app.get('/api/health', (req, res) => res.json({ ok: true, database: Boolean(pool) }))
 app.post('/api/auth/admin/signup', requireDatabase, async (req, res) => {
