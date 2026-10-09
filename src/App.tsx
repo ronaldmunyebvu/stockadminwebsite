@@ -1,5 +1,5 @@
 ﻿import { useEffect, useMemo, useState, type ChangeEvent, type FormEvent, type ReactNode } from 'react'
-import { Activity, Archive, ArrowUpRight, Banknote, Boxes, Check, ChevronDown, CircleHelp, ClipboardList, Cloud, CreditCard, Database, Download, Eye, FileText, LayoutDashboard, Lock, LogOut, Menu, Package, Plus, RefreshCw, Search, Settings, ShieldCheck, ShoppingCart, SlidersHorizontal, Trash2, UserRound, Users, Wifi, X } from 'lucide-react'
+import { Activity, Archive, ArrowUpRight, Banknote, Boxes, Check, ChevronDown, CircleHelp, ClipboardList, Cloud, CreditCard, Database, Download, Eye, FileText, LayoutDashboard, Lock, LogOut, Menu, Package, Phone, Plus, RefreshCw, Search, Settings, ShieldCheck, ShoppingCart, SlidersHorizontal, Trash2, UserRound, Users, Wifi, X } from 'lucide-react'
 import { approveSession, createExcelUpload, createItem, createItems, createLocation, createShopAdmin, createZone, createUser, deleteInventory, deleteItem, deleteSession, deleteShop, deleteUser, getPaymentStatus, getSales, getSessionEntries, getSessionReport, isNeonConfigured, loadAdminData, recountSession, rejectSession, resetPassword, scheduleClickCount, sendOtp, signInAdmin, signOutAdmin, submitBillingRequest, submitReport, updateItem, updateOrganization, updateThresholds, updateUser, updateUserStatus, verifyOtp } from './service'
 import type { AdminData, CountEntry, CountReport, DailySales, PlanType, SalesSummary, SessionStatus, Subscription, UserRole } from './types'
 
@@ -382,14 +382,15 @@ function LockedScreen({ sub, onPaid, onSignOut }: { sub: Subscription; onPaid: (
           ? <>Your {sub.trial_days ?? 30}-day access period for <strong>{sub.org_name}</strong> has ended. Submit a renewal request below, or contact the super admin to renew your shop.</>
           : <>Choose the package you want for <strong>{sub.org_name}</strong> and submit your request. The super admin must approve it before your shop opens.</>}</p>
       {pending && requested && <p className="muted" style={{ fontSize: '0.85rem', marginTop: '0.75rem' }}>Submitted {requested} · Package: {planLabels[sub.plan_type]}</p>}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '0.75rem', margin: '1.25rem 0', textAlign: 'left' }}>
+      {!pending && <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '0.75rem', margin: '1.25rem 0', textAlign: 'left' }}>
         {plans.map(plan => <button type="button" key={plan.id} onClick={() => setPlanType(plan.id)} style={{ border: plan.primary ? '1.5px solid #16a34a' : '1px solid #e5e7eb', borderRadius: 12, padding: '1rem', background: plan.primary ? '#f0fdf4' : '#fff', cursor: 'pointer', textAlign: 'left' }}>
           <p style={{ margin: 0, fontSize: '0.78rem', fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: plan.primary ? '#16a34a' : '#374151' }}>{plan.name}{plan.primary && <span style={{ float: 'right', color: '#16a34a' }}><Check size={14} /></span>}</p>
           <p style={{ margin: '0.15rem 0 0', fontSize: '1.25rem', fontWeight: 700, color: '#111827' }}>${plan.price.toFixed(2)}<span style={{ fontSize: '0.72rem', fontWeight: 500, color: '#6b7280' }}> / month</span></p>
           <p className="muted" style={{ fontSize: '0.8rem', margin: '0.35rem 0 0' }}>{plan.desc}</p>
         </button>)}
-      </div>
-      <button className="button button-primary" style={{ width: '100%' }} disabled={busy} onClick={submitRequest}>{busy ? 'Submitting...' : pending ? 'Resubmit request' : 'Submit request'}</button>
+      </div>}
+      {!pending && <button className="button button-primary" style={{ width: '100%' }} disabled={busy} onClick={submitRequest}>{busy ? 'Submitting...' : 'Submit request'}</button>}
+      {pending && <a className="button button-primary" style={{ width: '100%', marginTop: '1.25rem', textDecoration: 'none', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.4rem' }} href="tel:+263782235442"><Phone size={16} />Contact admin · +263 782 235 442</a>}
       {notice && <div className="auth-error" style={{ marginTop: '0.75rem' }}>{notice}</div>}
       <p className="muted" style={{ fontSize: '0.85rem', marginTop: '0.85rem' }}>Once approved, your shop works for {sub.trial_days ?? 30} days. Contact the super admin when you need a renewal.</p>
       <button className="text-button" style={{ marginTop: '0.5rem' }} onClick={onSignOut}><LogOut size={15} />Sign out</button>

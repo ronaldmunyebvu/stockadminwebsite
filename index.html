@@ -2,11 +2,27 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/stockLOGO.svg" />
+    <link rel="apple-touch-icon" href="/stockLOGO.svg" />
+    <link rel="manifest" href="/manifest.webmanifest" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#f6f7f2" />
     <title>ClickCount Admin</title>
+    <style>
+      #app-splash { position: fixed; inset: 0; z-index: 9999; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 22px; background: #f6f7f2; transition: opacity .35s ease; }
+      #app-splash.app-splash-hide { opacity: 0; pointer-events: none; }
+      #app-splash img { width: 132px; height: 132px; border-radius: 30px; box-shadow: 0 20px 50px rgba(15,23,42,.22); }
+      #app-splash .app-splash-title { color: #111827; font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif; font-size: 19px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+      #app-splash .app-splash-spinner { width: 26px; height: 26px; border: 3px solid rgba(17,24,39,.15); border-top-color: #16a34a; border-radius: 50%; animation: app-splash-spin .8s linear infinite; }
+      @keyframes app-splash-spin { to { transform: rotate(360deg); } }
+    </style>
   </head>
   <body>
+    <div id="app-splash">
+      <img src="/stockLOGO.svg" alt="ClickCount" />
+      <div class="app-splash-title">ClickCount Admin</div>
+      <div class="app-splash-spinner"></div>
+    </div>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
