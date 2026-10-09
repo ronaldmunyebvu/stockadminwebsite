@@ -723,7 +723,7 @@ function ReportDialog({ sessionId, session, entries, data, onClose, onNotice, on
   const [summary, setSummary] = useState('')
   const [busy, setBusy] = useState(false)
   const seen = new Map<string, CountEntry>()
-  for (const entry of entries) { if (!seen.has(entry.item_id)) seen.set(entry.item_id, entry) }
+  for (const entry of entries) { const existing = seen.get(entry.item_id); if (!existing || (entry.count_round ?? 0) > (existing.count_round ?? 0)) seen.set(entry.item_id, entry) }
   const items = [...seen.values()]
   const totalItems = items.length
   const matchedItems = items.filter(e => e.variance === 0).length
