@@ -90,7 +90,7 @@ export default function App() {
         {page === 'settings' && <SettingsPage data={data} setData={setData} onSaved={() => setNotice('Settings saved to the shared workspace.')} onDeleted={() => { signOutAdmin(); setAdminReady(false); setData(null); setNotice('') }} />}
       </div>
     </main>
-    {dialog === 'team' && <InviteDialog data={data} onClose={() => setDialog(null)} onCreated={user => { setData({ ...data, users: [...data.users, user] }); setDialog(null); setNotice('Invitation created. The teammate can complete setup in the app.') }} />}
+    {dialog === 'team' && <InviteDialog data={data} onClose={() => setDialog(null)} onCreated={user => { setData({ ...data, users: [...data.users, user] }); setDialog(null); setNotice('Invitation created. The teammate will get a verification code when they sign in for the first time.') }} />}
     {dialog === 'inventory' && <ItemDialog data={data} onClose={() => setDialog(null)} onCreated={item => { setData({ ...data, items: [...data.items, item] }); setDialog(null); setNotice('Inventory item added to the shared catalogue.') }} />}
     {dialog === 'edit-item' && editingItem && <ItemDialog data={data} item={editingItem} onClose={() => { setDialog(null); setEditingItem(null) }} onUpdated={item => { setData({ ...data, items: data.items.map(i => i.id === item.id ? item : i) }); setDialog(null); setEditingItem(null); setNotice('Product updated in the shared catalogue.') }} />}
     {dialog === 'import' && <ImportDialog data={data} onClose={() => setDialog(null)} onCreated={items => { setData({ ...data, items: [...items, ...data.items] }); setDialog(null); setNotice(`${items.length} products imported into the shared catalogue.`) }} />}
