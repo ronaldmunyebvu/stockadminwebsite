@@ -17,13 +17,18 @@ export interface SalesSummary { total_revenue: number; total_sales: number; tota
 export interface AdminData { org: { id: string; name: string; variance_threshold_pct: number; variance_threshold_units: number; logo_url?: string | null; tagline?: string | null; address?: string | null }; users: User[]; locations: Location[]; zones: Zone[]; items: Item[]; sessions: CountSession[]; logs: AuditLog[]; uploads: ExcelUpload[]; sales?: Sale[]; source: 'demo' | 'neon' }
 
 export interface PlanInfo { price: number; label: string; description: string; members: number | null; skus: number | null; branches: number | null }
+export type ShopStatus = 'pending' | 'active' | 'expired' | 'inactive'
 export interface Subscription {
   org_id?: string
   org_name: string
   plan_type: 'basic' | 'unlimited'
-  plan_status: 'active' | 'inactive' | 'expired'
+  plan_status: ShopStatus
+  status: ShopStatus
   paid: boolean
   expires_at: string | null
+  approval_requested_at?: string | null
+  approved_at?: string | null
+  trial_days?: number
   extra_member_slots: number
   members_allowed: number | null
   skus_allowed: number | null
@@ -33,7 +38,5 @@ export interface Subscription {
   branches_used: number
   renewal_amount: number
   currency: string
-  test_mode: boolean
   pricing: { basic: PlanInfo; extra_member: PlanInfo; unlimited: PlanInfo }
 }
-export interface PaymentRecord { id: string; org_id: string; intent: 'subscribe' | 'upgrade' | 'extra_member'; plan_type: 'basic' | 'unlimited'; amount: number; currency: string; provider: string; provider_ref?: string | null; status: 'pending' | 'paid' | 'failed'; paid_at?: string | null; created_at: string }

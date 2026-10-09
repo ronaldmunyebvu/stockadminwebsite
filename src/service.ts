@@ -1,5 +1,5 @@
 ﻿import { demoData } from './data'
-import type { AdminData, CountEntry, CountReport, CountSession, Item, Location, PaymentRecord, SalesSummary, Subscription, User, Zone } from './types'
+import type { AdminData, CountEntry, CountReport, CountSession, Item, Location, SalesSummary, Subscription, User, Zone } from './types'
 
 const configuredUrl = (import.meta.env.VITE_API_URL as string | undefined)?.trim().replace(/\/+$/, '').replace(/\/api$/, '')
 const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]', '::1'])
@@ -24,13 +24,11 @@ function token() { return localStorage.getItem('ClickCount_admin_token') }
 export class ApiError extends Error {
   code?: string
   status?: number
-  payment?: { intent: string; plan_type?: string; amount?: number; label?: string }
-  constructor(message: string, status?: number, code?: string, payment?: { intent: string; plan_type?: string; amount?: number; label?: string }) {
+  constructor(message: string, status?: number, code?: string) {
     super(message)
     this.name = 'ApiError'
     this.status = status
     this.code = code
-    this.payment = payment
   }
 }
 
@@ -48,7 +46,7 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const text = await response.text()
   let body: Record<string, unknown>
   try { body = text ? JSON.parse(text) : {} } catch { body = { error: text ? `${text.slice(0, 300)} (${response.status})` : `Request failed (${response.status})` } }
-  if (!response.ok) throw new ApiError(String(body.error || `Request failed (${response.status})`), response.status, typeof body.code === 'string' ? body.code : undefined, typeof body.payment === 'object' && body.payment ? body.payment as ApiError['payment'] : undefined)
+  if (!response.ok) throw new ApiError(String(body.error || `Request failed (${response.status})`), response.status, typeof body.code === 'string' ? body.code : undefined)
   return body as T
 }
 
@@ -57,8 +55,12 @@ function demoSubscription(): Subscription {
     org_name: demoData.org.name,
     plan_type: 'basic',
     plan_status: 'active',
+    status: 'active',
     paid: true,
     expires_at: null,
+    approval_requested_at: null,
+    approved_at: null,
+    trial_days: 30,
     extra_member_slots: 0,
     members_allowed: 3,
     skus_allowed: 500,
@@ -68,7 +70,6 @@ function demoSubscription(): Subscription {
     branches_used: demoData.locations.length,
     renewal_amount: 7.5,
     currency: 'USD',
-    test_mode: true,
     pricing: {
       basic: { price: 7.5, label: 'Basic', description: 'Up to 3 team members, 500 SKUs, 1 branch', members: 3, skus: 500, branches: 1 },
       extra_member: { price: 2.5, label: 'Extra member slot', description: 'One additional team member for a month', members: null, skus: null, branches: null },
@@ -83,9 +84,9 @@ export async function signInAdmin(identifier: string, password: string) {
   localStorage.setItem('ClickCount_admin_token', result.token)
   return { user: result.user, profile: result.user, subscription: result.subscription }
 }
-export async function getPaymentStatus(): Promise<Subscription> { return apiUrl ? request<Subscription>('/api/payments/status') : demoSubscription() }
-export async function initiatePayment(intent: 'subscribe' | 'upgrade' | 'extra_member', planType?: 'basic' | 'unlimited', customerMsisdn?: string): Promise<{ test_mode: boolean; payment: PaymentRecord; pending?: boolean; status?: string; message?: string; subscription?: Subscription }> { return apiUrl ? request<{ test_mode: boolean; payment: PaymentRecord; pending?: boolean; status?: string; message?: string; subscription?: Subscription }>('/api/payments/initiate', { method: 'POST', body: JSON.stringify({ intent, plan_type: planType, customerMsisdn }) }) : { test_mode: true, payment: { id: `demo-${Date.now()}`, org_id: '', intent, plan_type: planType || 'basic', amount: intent === 'extra_member' ? 2.5 : planType === 'unlimited' ? 15 : 7.5, currency: 'USD', provider: 'ecocash', status: 'paid', created_at: new Date().toISOString() }, subscription: demoSubscription() } }
-export async function createShopAdmin(shopName: string, fullName: string, identifier: string, password: string, logoUrl?: string, address?: string) { if (!apiUrl) return { user: { id: 'demo-admin', email: identifier }, profile: { ...demoData.users[0], full_name: fullName, email: identifier } }; return request<{ requiresOtp: true; requiresConfirmation: true; channel: 'sms' | 'email'; identifier: string; code?: string }>('/api/auth/admin/signup', { method: 'POST', body: JSON.stringify({ shopName, fullName, identifier, password, logoUrl: logoUrl || null, address: address || null }) }) }
+export async function getPaymentStatus(): Promise<Subscription> { return apiUrl ? request<Subscription>('/api/billing/status') : demoSubscription() }
+export async function submitBillingRequest(planType: 'basic' | 'unlimited'): Promise<{ ok: boolean; message: string; subscription: Subscription }> { return apiUrl ? request<{ ok: boolean; message: string; subscription: Subscription }>('/api/billing/request', { method: 'POST', body: JSON.stringify({ plan_type: planType }) }) : { ok: true, message: 'Your request has been submitted.', subscription: demoSubscription() } }
+export async function createShopAdmin(shopName: string, fullName: string, identifier: string, password: string, logoUrl?: string, address?: string, planType: 'basic' | 'unlimited' = 'basic') { if (!apiUrl) return { user: { id: 'demo-admin', email: identifier }, profile: { ...demoData.users[0], full_name: fullName, email: identifier } }; return request<{ requiresOtp: true; requiresConfirmation: true; channel: 'sms' | 'email'; identifier: string; code?: string }>('/api/auth/admin/signup', { method: 'POST', body: JSON.stringify({ shopName, fullName, identifier, password, logoUrl: logoUrl || null, address: address || null, planType }) }) }
 export async function sendOtp(identifier: string, purpose = 'reset') { if (!apiUrl) return { ok: true, channel: 'email' as const, code: '123456' }; return request<{ ok: true; channel: 'sms' | 'email'; code?: string }>('/api/auth/otp/send', { method: 'POST', body: JSON.stringify({ identifier, purpose }) }) }
 export async function verifyOtp(identifier: string, code: string, purpose = 'reset') { if (apiUrl) return request<{ ok: true }>('/api/auth/otp/verify', { method: 'POST', body: JSON.stringify({ identifier, code, purpose }) }) }
 export async function resetPassword(identifier: string, code: string, password: string) { if (apiUrl) return request<{ ok: true }>('/api/auth/reset-password', { method: 'POST', body: JSON.stringify({ identifier, code, password }) }) }
