@@ -197,7 +197,7 @@ function SessionDetail({ sessionId, data, setData, onBack, onNotice }: { session
 
   useEffect(() => {
     setLoadingEntries(true)
-    getSessionEntries(sessionId).then(setEntries).catch(() => setEntries([])).finally(() => setLoadingEntries(false))
+    getSessionEntries(sessionId).then(rows => setEntries(rows.map(e => ({ ...e, variance: Number(e.variance) })))).catch(() => setEntries([])).finally(() => setLoadingEntries(false))
     getSessionReport(sessionId).then(setReport).catch(() => setReport(null))
   }, [sessionId])
 
@@ -279,8 +279,8 @@ function SessionDetail({ sessionId, data, setData, onBack, onNotice }: { session
             <button className="button button-secondary" disabled={busy} onClick={() => setShowRecountDialog(true)}><RefreshCw size={16} />Assign Recount</button>
           </>}
           {hasReport && <button className="button button-secondary" onClick={handleViewReport}><FileText size={16} />View Report</button>}
-          {session.status === 'approved' && !hasReport && <button className="button button-primary" onClick={() => setReportDialog('prepare')}><FileText size={16} />Prepare Report</button>}
-          {session.status === 'approved' && <button className="button button-secondary" onClick={handleDownloadPDF}><Download size={16} />Download PDF</button>}
+          {!hasReport && <button className="button button-primary" onClick={() => setReportDialog('prepare')}><FileText size={16} />Prepare Report</button>}
+          <button className="button button-secondary" onClick={handleDownloadPDF}><Download size={16} />Download PDF</button>
           {canDelete && <button className="button button-secondary" disabled={busy} onClick={handleDelete} style={{ color: '#dc2626' }}><Trash2 size={16} />Delete</button>}
         </div>
       </div>
