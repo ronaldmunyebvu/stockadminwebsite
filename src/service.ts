@@ -80,9 +80,10 @@ function demoSubscription(): Subscription {
 }
 
 export async function signInAdmin(identifier: string, password: string) {
-  if (!apiUrl) return { user: { id: 'demo-admin', email: identifier }, profile: demoData.users[0], subscription: demoSubscription() }
+  if (!apiUrl) { localStorage.setItem('ClickCount_admin_profile', JSON.stringify({ full_name: demoData.users[0].full_name, email: identifier })); return { user: { id: 'demo-admin', email: identifier }, profile: demoData.users[0], subscription: demoSubscription() } }
   const result = await request<{ token: string; user: AdminData['users'][number]; subscription?: Subscription }>('/api/auth/login', { method: 'POST', body: JSON.stringify({ identifier, email: identifier, password, role: 'admin' }) })
   localStorage.setItem('ClickCount_admin_token', result.token)
+  localStorage.setItem('ClickCount_admin_profile', JSON.stringify({ full_name: result.user.full_name, email: result.user.email }))
   return { user: result.user, profile: result.user, subscription: result.subscription }
 }
 export async function getPaymentStatus(): Promise<Subscription> { return apiUrl ? request<Subscription>('/api/billing/status') : demoSubscription() }

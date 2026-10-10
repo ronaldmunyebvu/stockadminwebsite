@@ -2,6 +2,8 @@
 import { Activity, Archive, ArrowUpRight, Banknote, Boxes, Check, ChevronDown, CircleHelp, ClipboardList, Cloud, CreditCard, Database, Download, Eye, FileText, LayoutDashboard, Lock, LogOut, Menu, Package, Phone, Plus, RefreshCw, Search, Settings, ShieldCheck, ShoppingCart, SlidersHorizontal, Trash2, UserRound, Users, Wifi, X } from 'lucide-react'
 import { approveSession, createExcelUpload, createItem, createItems, createLocation, createShopAdmin, createZone, createUser, deleteInventory, deleteItem, deleteSession, deleteShop, deleteUser, getPaymentStatus, getSales, getSessionEntries, getSessionReport, isNeonConfigured, loadAdminData, recountSession, rejectSession, resetPassword, scheduleClickCount, sendOtp, signInAdmin, signOutAdmin, submitBillingRequest, submitReport, updateItem, updateOrganization, updateThresholds, updateUser, updateUserStatus, verifyOtp } from './service'
 import type { AdminData, CountEntry, CountReport, DailySales, PlanType, SalesSummary, SessionStatus, Subscription, UserRole } from './types'
+import { jsPDF } from 'jspdf'
+import autoTable from 'jspdf-autotable'
 
 const statusLabels: Record<SessionStatus, string> = { draft: 'Draft', in_progress: 'Counting', submitted: 'Submitted', submitted_to_admin: 'Awaiting review', under_review: 'Needs review', approved: 'Approved', rejected: 'Rejected', recount_assigned: 'Recount' }
 const roleLabels: Record<UserRole, string> = { admin: 'Admin', counter: 'Counter', auditor: 'Auditor', seller: 'Seller' }
@@ -65,13 +67,14 @@ export default function App() {
   const handlePage = (next: string) => { setPage(next); setMenuOpen(false); setQuery(''); setSelectedSession(null) }
   const refresh = () => { setLoading(true); loadAdminData().then(setData).catch(error => setNotice(error.message)).finally(() => setLoading(false)) }
   const handlePrimaryAction = () => setDialog(page === 'team' ? 'team' : page === 'inventory' ? 'inventory' : page === 'sessions' ? 'threshold-confirm' : null)
+  const adminLabel = (() => { try { const raw = localStorage.getItem('ClickCount_admin_profile'); if (!raw) return ''; const p = JSON.parse(raw); return typeof p.full_name === 'string' && p.full_name.trim() ? p.full_name : '' } catch { return '' } })() || data.users.find(u => u.role === 'admin')?.full_name || 'Administrator'
 
   return <div className="app-shell">
     <aside className={menuOpen ? 'sidebar sidebar-open' : 'sidebar'}>
       <div className="brand"><div className="brand-mark"><Package size={21} strokeWidth={2.5} /></div><div><strong>ClickCount</strong><span>ADMIN CONSOLE</span></div><button className="icon-button sidebar-close" onClick={() => setMenuOpen(false)} aria-label="Close menu"><X size={18} /></button></div>
       <div className="workspace-switcher"><div className="workspace-avatar">NS</div><div><span>Workspace</span><strong>{data.org.name}</strong></div><ChevronDown size={15} /></div>
       <nav className="main-nav">{nav.map(item => { const Icon = item.icon; return <button key={item.id} className={page === item.id ? 'nav-item active' : 'nav-item'} onClick={() => handlePage(item.id)}><Icon size={18} /><span>{item.label}</span>{item.id === 'sessions' && data.sessions.filter(session => session.status === 'under_review').length > 0 && <b className="nav-count">{data.sessions.filter(session => session.status === 'under_review').length}</b>}</button> })}</nav>
-      <div className="sidebar-bottom"><div className="support-link"><CircleHelp size={17} /><span>Help center</span><ArrowUpRight size={14} /></div><div className="profile"><div className="avatar avatar-olive">AM</div><div><strong>Ava Moyo</strong><span>Administrator</span></div><button className="icon-button" aria-label="Sign out"><LogOut size={16} /></button></div></div>
+      <div className="sidebar-bottom"><div className="support-link"><CircleHelp size={17} /><span>Help center</span><ArrowUpRight size={14} /></div><div className="profile"><div className="avatar avatar-olive">{initials(adminLabel)}</div><div><strong>{adminLabel}</strong><span>Administrator</span></div><button className="icon-button" aria-label="Sign out" onClick={handleSignOut}><LogOut size={16} /></button></div></div>
     </aside>
     {menuOpen && <button className="mobile-overlay" onClick={() => setMenuOpen(false)} aria-label="Close navigation" />}
     <main className="main-content">
@@ -175,8 +178,50 @@ function Sessions({ data, query, setQuery, onSelect, onDelete }: { data: AdminDa
   return <div className="content-stack"><section className="filter-bar"><div className="search-box"><Search size={17} /><input value={query} onChange={event => setQuery(event.target.value)} placeholder="Search count sessions" /></div><button className="filter-button"><SlidersHorizontal size={16} />All statuses <ChevronDown size={14} /></button><span className="result-count">{filtered.length} sessions</span></section><section className="panel table-panel"><div className="table-toolbar"><div><p className="panel-kicker">Inventory control</p><h3>All count sessions</h3></div><div className="session-summary"><span className="status-dot" />{data.sessions.filter(s => s.status === 'under_review' || s.status === 'submitted_to_admin').length} awaiting review</div></div><div className="table-scroll"><table><thead><tr><th>Session</th><th>Status</th><th>Location</th><th>Assigned to</th><th>Started</th><th /></tr></thead><tbody>{filtered.map(session => <tr key={session.id} style={{ cursor: 'pointer' }} onClick={() => onSelect(session.id)}><td><strong>{session.name}</strong><small className="table-sub">{session.mode} count</small></td><td><div className={`status-pill status-${session.status}`}><span />{statusLabels[session.status]}</div></td><td className="muted">{locationName(session.location_id, data)}<small className="table-sub">{zoneName(session.zone_id, data)}</small></td><td><div className="person-cell"><div className="avatar avatar-small">{initials(displayName(session.assigned_counter_id, data))}</div>{displayName(session.assigned_counter_id, data)}</div></td><td className="muted">{formatDate(session.created_at)}</td><td onClick={event => event.stopPropagation()}>{session.status !== 'in_progress' && <button className="icon-button" title="Delete session" onClick={() => { if (window.confirm('Are you sure you want to delete this session? This cannot be undone.')) onDelete(session.id) }}><Trash2 size={16} /></button>}</td></tr>)}</tbody></table></div></section></div>
 }
 
-function reportPdfHtml(session: { name: string; mode: string; status: string }, items: Array<{ item?: { name?: string; sku?: string }; system_qty: number; counted_qty: number; variance: number; count_round?: number; is_flagged?: boolean }>, totalItems: number, matchedItems: number, varianceItems: number, summary?: string) {
-  return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Count Report - ${session.name}</title><style>body{font-family:Arial,sans-serif;margin:40px;color:#1f2937}h1{font-size:22px;border-bottom:2px solid #e5e7eb;padding-bottom:10px}h2{font-size:16px;margin-top:24px;color:#374151}.meta{display:flex;gap:2rem;margin:12px 0;font-size:13px;color:#6b7280}.summary-box{background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;padding:16px;margin:16px 0}.stat{display:inline-block;margin-right:2rem}.stat strong{font-size:20px;display:block}.stat small{color:#6b7280}table{width:100%;border-collapse:collapse;margin-top:12px;font-size:13px}th{background:#f3f4f6;padding:8px 12px;text-align:left;border-bottom:2px solid #e5e7eb;font-weight:600}td{padding:8px 12px;border-bottom:1px solid #e5e7eb}.flagged{color:#dc2626;font-weight:600}.matched{color:#16a34a}.notes{margin-top:16px;padding:12px;background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;font-size:13px;color:#374151}footer{margin-top:24px;font-size:11px;color:#9ca3af;text-align:center;border-top:1px solid #e5e7eb;padding-top:12px}@media print{body{margin:20px}}</style></head><body><h1>Stock Count Report</h1><div class="meta"><span><strong>Session:</strong> ${session.name}</span><span><strong>Date:</strong> ${new Date().toLocaleDateString()}</span><span><strong>Mode:</strong> ${session.mode}</span></div><div class="summary-box"><div class="stat"><strong>${totalItems}</strong><small>Total items</small></div><div class="stat"><strong>${matchedItems}</strong><small>Matched</small></div><div class="stat"><strong>${varianceItems}</strong><small>With variance</small></div><div class="stat"><strong>${session.status}</strong><small>Status</small></div></div><h2>Item Details</h2><table><thead><tr><th>Item</th><th>SKU</th><th>System Qty</th><th>Counted Qty</th><th>Variance</th><th>Final Round</th><th>Result</th></tr></thead><tbody>${items.map(e => `<tr><td>${e.item?.name || 'Unknown'}</td><td>${e.item?.sku || ''}</td><td>${e.system_qty}</td><td>${e.counted_qty}</td><td class="${e.variance !== 0 ? 'flagged' : 'matched'}">${e.variance > 0 ? '+' : ''}${e.variance}</td><td>${e.count_round ?? 1}</td><td class="${e.variance !== 0 ? 'flagged' : 'matched'}">${e.variance !== 0 ? 'Variance' : 'Matched'}</td></tr>`).join('')}</tbody></table>${summary ? `<div class="notes"><strong>Auditor/Admin Notes:</strong><br/>${summary.replace(/\n/g, '<br/>')}</div>` : ''}<footer>Generated by ClickCount Admin Console &middot; ${new Date().toLocaleString()}</footer></body></html>`
+function downloadReportPdf(opts: { org: { name: string; logo_url?: string | null }; session: { name: string; mode: string; status: string }; rows: Array<{ item?: { name?: string; sku?: string } | null; name?: string; sku?: string; system_qty: number; counted_qty: number; variance: number | string; count_round?: number }>; matched: number; varianceCount: number; notes?: string; fileName: string }) {
+  const doc = new jsPDF({ unit: 'pt', format: 'a4' })
+  const pageWidth = doc.internal.pageSize.getWidth()
+  const margin = 40
+  let y = 50
+  if (opts.org.logo_url) {
+    try { const logo = opts.org.logo_url; const fmt = logo.startsWith('data:image/png') ? 'PNG' : (logo.startsWith('data:image/jpeg') || logo.startsWith('data:image/jpg')) ? 'JPEG' : 'PNG'; doc.addImage(logo, fmt, pageWidth - margin - 92, 42, 92, 30) } catch { }
+  }
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(20); doc.setTextColor(23, 35, 31)
+  doc.text(opts.org.name, margin, y); y += 22
+  doc.setFontSize(11); doc.setTextColor(80)
+  doc.text('Stock Count Report', margin, y); y += 16
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(10); doc.setTextColor(110)
+  for (const m of [`Session: ${opts.session.name}`, `Mode: ${opts.session.mode}`, `Date: ${new Date().toLocaleDateString()}`, `Status: ${opts.session.status}`]) { doc.text(m, margin, y); y += 14 }
+  y += 8
+  doc.setFillColor(243, 244, 246); doc.roundedRect(margin, y, pageWidth - margin * 2, 56, 6, 6, 'F')
+  const total = opts.rows.length
+  const sw = (pageWidth - margin * 2) / 3
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(18)
+  doc.setTextColor(22, 163, 74); doc.text(String(opts.matched), margin + sw * 0 + 16, y + 28)
+  doc.setTextColor(220, 38, 38); doc.text(String(opts.varianceCount), margin + sw * 1 + 16, y + 28)
+  doc.setTextColor(23, 35, 31); doc.text(String(total), margin + sw * 2 + 16, y + 28)
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(9); doc.setTextColor(110)
+  doc.text('Matched', margin + sw * 0 + 16, y + 42); doc.text('With variance', margin + sw * 1 + 16, y + 42); doc.text('Total items', margin + sw * 2 + 16, y + 42)
+  y += 56 + 18
+  if (opts.notes) {
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(10); doc.setTextColor(55)
+    doc.text('Notes:', margin, y); y += 14
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(9); doc.setTextColor(80)
+    const lines = doc.splitTextToSize(opts.notes, pageWidth - margin * 2)
+    doc.text(lines, margin, y); y += lines.length * 11 + 8
+  }
+  autoTable(doc, {
+    startY: y,
+    head: [['Item', 'SKU', 'System Qty', 'Counted Qty', 'Variance', 'Final Round', 'Result']],
+    body: opts.rows.map(r => { const variance = Number(r.variance); return [(r.item?.name || r.name) || 'Unknown', r.item?.sku || r.sku || '', r.system_qty, r.counted_qty, `${variance > 0 ? '+' : ''}${variance}`, r.count_round ?? 1, variance === 0 ? 'Matched' : 'Variance'] }),
+    styles: { font: 'helvetica', fontSize: 9 },
+    headStyles: { fillColor: [36, 67, 51], textColor: 255, fontStyle: 'bold' },
+    margin: { left: margin, right: margin },
+  })
+  const finalY = (doc as any).lastAutoTable?.finalY || y
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(8); doc.setTextColor(150)
+  doc.text(`Generated by ClickCount Admin Console Â· ${new Date().toLocaleString()}`, pageWidth / 2, finalY + 24, { align: 'center' })
+  doc.save(opts.fileName)
 }
 
 function SessionDetail({ sessionId, data, setData, onBack, onNotice }: { sessionId: string; data: AdminData; setData: (data: AdminData) => void; onBack: () => void; onNotice: (msg: string) => void }) {
@@ -258,7 +303,7 @@ function SessionDetail({ sessionId, data, setData, onBack, onNotice }: { session
   const finalItems = [...latestByItem.values()].sort((a, b) => (a.item?.name || '').localeCompare(b.item?.name || ''))
   const matchedCount = finalItems.filter(e => Number(e.variance) === 0).length
   const varianceCount = finalItems.length - matchedCount
-  const handleDownloadPDF = () => { const html = reportPdfHtml(session, finalItems, finalItems.length, matchedCount, varianceCount); const blob = new Blob([html], { type: 'text/html' }); const url = URL.createObjectURL(blob); const w = window.open(url, '_blank'); if (w) { w.onload = () => { w.print() } } }
+  const handleDownloadPDF = () => { downloadReportPdf({ org: data.org, session, rows: finalItems, matched: matchedCount, varianceCount, fileName: `Count Report - ${session.name}` }) }
 
   return <div className="content-stack">
     <section className="panel" style={{ padding: '1.5rem' }}>
@@ -751,13 +796,7 @@ function ReportDialog({ sessionId, session, entries, data, onClose, onNotice, on
     finally { setBusy(false) }
   }
 
-  const handleDownloadPDF = () => {
-    const html = reportPdfHtml(session, items, totalItems, matchedItems, varianceItems, summary)
-    const blob = new Blob([html], { type: 'text/html' })
-    const url = URL.createObjectURL(blob)
-    const w = window.open(url, '_blank')
-    if (w) { w.onload = () => { w.print() } }
-  }
+  const handleDownloadPDF = () => { downloadReportPdf({ org: data.org, session, rows: items, matched: matchedItems, varianceCount: varianceItems, notes: summary || undefined, fileName: `Count Report - ${session.name}` }) }
 
   return <Dialog title="Prepare count report" description="Review the results and add notes before submitting the report." onClose={onClose}>
     <div className="dialog-form">
@@ -781,13 +820,7 @@ function ReportDialog({ sessionId, session, entries, data, onClose, onNotice, on
 function ViewReportDialog({ report, session, entries, data, onClose }: { report: CountReport | null; session: AdminData['sessions'][number]; entries: CountEntry[]; data: AdminData; onClose: () => void }) {
   if (!report) return null
   const items = report.items_summary || []
-  const handleDownloadPDF = () => {
-    const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Count Report - ${session.name}</title><style>body{font-family:Arial,sans-serif;margin:40px;color:#1f2937}h1{font-size:22px;border-bottom:2px solid #e5e7eb;padding-bottom:10px}h2{font-size:16px;margin-top:24px;color:#374151}.meta{display:flex;gap:2rem;margin:12px 0;font-size:13px;color:#6b7280}.summary-box{background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;padding:16px;margin:16px 0}.stat{display:inline-block;margin-right:2rem}.stat strong{font-size:20px;display:block}.stat small{color:#6b7280}table{width:100%;border-collapse:collapse;margin-top:12px;font-size:13px}th{background:#f3f4f6;padding:8px 12px;text-align:left;border-bottom:2px solid #e5e7eb;font-weight:600}td{padding:8px 12px;border-bottom:1px solid #e5e7eb}.flagged{color:#dc2626;font-weight:600}.matched{color:#16a34a}.notes{margin-top:16px;padding:12px;background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;font-size:13px;color:#374151}footer{margin-top:24px;font-size:11px;color:#9ca3af;text-align:center;border-top:1px solid #e5e7eb;padding-top:12px}@media print{body{margin:20px}}</style></head><body><h1>Stock Count Report</h1><div class="meta"><span><strong>Session:</strong> ${session.name}</span><span><strong>Date:</strong> ${formatDate(report.created_at)}</span><span><strong>Mode:</strong> ${session.mode}</span><span><strong>Report type:</strong> ${report.report_type}</span><span><strong>Submitted by:</strong> ${report.submitted_by_name || 'Unknown'}</span></div><div class="summary-box"><div class="stat"><strong>${report.total_items}</strong><small>Total items</small></div><div class="stat"><strong>${report.matched_items}</strong><small>Matched</small></div><div class="stat"><strong>${report.variance_items}</strong><small>With variance</small></div><div class="stat"><strong>${session.status}</strong><small>Status</small></div></div><h2>Item Details</h2><table><thead><tr><th>Item</th><th>SKU</th><th>System Qty</th><th>Counted Qty</th><th>Variance</th><th>Round</th><th>Flagged</th></tr></thead><tbody>${items.map(e => `<tr><td>${e.name}</td><td>${e.sku}</td><td>${e.system_qty}</td><td>${e.counted_qty}</td><td class="${e.variance !== 0 ? 'flagged' : 'matched'}">${e.variance > 0 ? '+' : ''}${e.variance}</td><td>${e.count_round}</td><td>${e.is_flagged ? 'Yes' : 'No'}</td></tr>`).join('')}</tbody></table>${report.summary ? `<div class="notes"><strong>Auditor/Admin Notes:</strong><br/>${report.summary.replace(/\n/g, '<br/>')}</div>` : ''}<footer>Generated by ClickCount Admin Console Â· ${new Date().toLocaleString()}</footer></body></html>`
-    const blob = new Blob([html], { type: 'text/html' })
-    const url = URL.createObjectURL(blob)
-    const w = window.open(url, '_blank')
-    if (w) { w.onload = () => { w.print() } }
-  }
+  const handleDownloadPDF = () => { downloadReportPdf({ org: data.org, session, rows: report.items_summary || [], matched: report.matched_items, varianceCount: report.variance_items, notes: report.summary || undefined, fileName: `Count Report - ${session.name}` }) }
   return <Dialog title="Count Report" description={`Report for ${session.name}`} onClose={onClose}>
     <div className="dialog-form">
       <div style={{ display: 'flex', gap: '1.5rem', marginBottom: '1.25rem', flexWrap: 'wrap' }}>
