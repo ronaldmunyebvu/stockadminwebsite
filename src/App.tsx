@@ -9,6 +9,11 @@ const statusLabels: Record<SessionStatus, string> = { draft: 'Draft', in_progres
 const roleLabels: Record<UserRole, string> = { admin: 'Admin', counter: 'Counter', auditor: 'Auditor', seller: 'Seller' }
 const planLabels: Record<PlanType, string> = { basic: 'Basic', standard: 'Standard', unlimited: 'Unlimited' }
 const planOrder: PlanType[] = ['basic', 'standard', 'unlimited']
+const superAdminContacts = [
+  { raw: '+263788031274', label: '+263 788 031 274' },
+  { raw: '+263715484082', label: '+263 715 484 082' },
+  { raw: '+263782235442', label: '+263 782 235 442' },
+]
 const nav = [
   { id: 'overview', label: 'Overview', icon: LayoutDashboard },
   { id: 'sales', label: 'Sales', icon: ShoppingCart },
@@ -447,8 +452,14 @@ function LockedScreen({ sub, onPaid, onSignOut }: { sub: Subscription; onPaid: (
         </button>)}
       </div>}
       {!pending && <button className="button button-primary" style={{ width: '100%' }} disabled={busy} onClick={submitRequest}>{busy ? 'Submitting...' : 'Submit request'}</button>}
-      {pending && <a className="button button-primary" style={{ width: '100%', marginTop: '1.25rem', textDecoration: 'none', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.4rem' }} href="tel:+263782235442"><Phone size={16} />Contact admin · +263 782 235 442</a>}
       {notice && <div className="auth-error" style={{ marginTop: '0.75rem' }}>{notice}</div>}
+      {(pending || notice) && <div style={{ marginTop: '1rem', padding: '1rem', border: '1px solid #e5e7eb', borderRadius: 12, background: '#f9fafb', textAlign: 'left' }}>
+        <p className="panel-kicker" style={{ margin: 0 }}>Contact the super admin for approval</p>
+        <p className="muted" style={{ fontSize: '0.85rem', margin: '0.35rem 0 0.75rem' }}>Call the super admin on any of these numbers so your shop can be approved:</p>
+        <div style={{ display: 'grid', gap: '0.5rem' }}>
+          {superAdminContacts.map(contact => <a key={contact.raw} className="button button-secondary" style={{ width: '100%', textDecoration: 'none', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.4rem' }} href={`tel:${contact.raw}`}><Phone size={16} />{contact.label}</a>)}
+        </div>
+      </div>}
       <p className="muted" style={{ fontSize: '0.85rem', marginTop: '0.85rem' }}>Once approved, your shop works for {sub.trial_days ?? 30} days. Contact the super admin when you need a renewal.</p>
       <button className="text-button" style={{ marginTop: '0.5rem' }} onClick={onSignOut}><LogOut size={15} />Sign out</button>
     </div>
