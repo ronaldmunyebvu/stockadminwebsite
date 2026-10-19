@@ -1,4 +1,4 @@
-﻿import { useEffect, useMemo, useState, type ChangeEvent, type FormEvent, type ReactNode } from 'react'
+﻿import { useEffect, useMemo, useRef, useState, type ChangeEvent, type FormEvent, type ReactNode } from 'react'
 import { Activity, Archive, ArrowUpRight, Banknote, Boxes, Check, ChevronDown, CircleHelp, ClipboardList, Cloud, CreditCard, Database, Download, Eye, FileText, LayoutDashboard, Lock, LogOut, Menu, Package, Phone, Plus, RefreshCw, Search, Settings, ShieldCheck, ShoppingCart, SlidersHorizontal, Trash2, UserRound, Users, Wifi, X } from 'lucide-react'
 import { approveSession, createExcelUpload, createItem, createItems, createLocation, createShopAdmin, createZone, createUser, deleteInventory, deleteItem, deleteSession, deleteShop, deleteUser, getPaymentStatus, getSales, getSessionEntries, getSessionReport, isNeonConfigured, loadAdminData, recountSession, rejectSession, resetPassword, scheduleClickCount, sendOtp, signInAdmin, signOutAdmin, submitBillingRequest, submitReport, updateItem, updateOrganization, updateThresholds, updateUser, updateUserStatus, verifyOtp } from './service'
 import type { AdminData, CountEntry, CountReport, DailySales, PlanType, SalesSummary, SessionStatus, Subscription, UserRole } from './types'
@@ -62,6 +62,25 @@ export default function App() {
 
   useEffect(() => { if (!isNeonConfigured || localStorage.getItem('ClickCount_admin_token')) { enterWorkspace() } else { setSubLoading(false); setLoading(false) } }, [])
   useEffect(() => { if (!notice) return; const timer = window.setTimeout(() => setNotice(''), 3500); return () => window.clearTimeout(timer) }, [notice])
+
+  const idleTimer = useRef<number | null>(null)
+  useEffect(() => {
+    if (!adminReady || !data) {
+      if (idleTimer.current) { window.clearTimeout(idleTimer.current); idleTimer.current = null }
+      return
+    }
+    const events = ['mousedown', 'keydown', 'touchstart', 'scroll'] as const
+    const resetIdle = () => {
+      if (idleTimer.current) window.clearTimeout(idleTimer.current)
+      idleTimer.current = window.setTimeout(() => { signOutAdmin(); setAdminReady(false); setData(null); setSub(null) }, 60_000)
+    }
+    events.forEach(event => window.addEventListener(event, resetIdle, { passive: true }))
+    resetIdle()
+    return () => {
+      events.forEach(event => window.removeEventListener(event, resetIdle))
+      if (idleTimer.current) { window.clearTimeout(idleTimer.current); idleTimer.current = null }
+    }
+  }, [adminReady, data])
 
   if (!adminReady) return <AuthScreen onAuthed={() => { setAdminReady(true); enterWorkspace() }} />
   if (subLoading) return <div className="loading-screen"><div className="loading-mark"><Package size={22} /></div><span>Checking your subscription</span></div>
@@ -415,13 +434,14 @@ function LockedScreen({ sub, onPaid, onSignOut }: { sub: Subscription; onPaid: (
   const [planType, setPlanType] = useState<PlanType>(sub.plan_type)
   const pending = sub.status === 'pending'
   const expired = sub.status === 'expired'
+  const deactivated = sub.status === 'deactivated'
   useEffect(() => {
-    if (!pending) return
+    if (!pending && !deactivated) return
     const timer = window.setInterval(async () => {
       try { const current = await getPaymentStatus(); if (current.paid) { window.clearInterval(timer); onPaid() } } catch { /* keep polling */ }
     }, 5000)
     return () => window.clearInterval(timer)
-  }, [pending])
+  }, [pending, deactivated])
   const submitRequest = async () => {
     setBusy(true); setNotice('')
     try {
@@ -436,31 +456,33 @@ function LockedScreen({ sub, onPaid, onSignOut }: { sub: Subscription; onPaid: (
     <div className="auth-card" style={{ maxWidth: 580, textAlign: 'center' }}>
       <div className="brand auth-brand"><div className="brand-mark"><Package size={21} /></div><div><strong>ClickCount</strong><span>ADMIN CONSOLE</span></div></div>
       <div style={{ width: 56, height: 56, borderRadius: '50%', background: pending ? '#fef3c7' : '#fef2f2', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '1.5rem auto 1rem', color: pending ? '#b45309' : '#dc2626' }}><Lock size={24} /></div>
-      <p className="eyebrow">{pending ? 'Awaiting approval' : expired ? 'Renewal required' : 'Approval required'}</p>
-      <h1 style={{ margin: '0 0 0.5rem' }}>{pending ? 'Your request is pending' : 'Your shop is locked'}</h1>
+      <p className="eyebrow">{pending ? 'Awaiting approval' : deactivated ? 'Shop deactivated' : expired ? 'Renewal required' : 'Approval required'}</p>
+      <h1 style={{ margin: '0 0 0.5rem' }}>{pending ? 'Your request is pending' : deactivated ? 'Your shop has been deactivated' : 'Your shop is locked'}</h1>
       <p className="auth-copy">{pending
         ? <>Your request for <strong>{sub.org_name}</strong> is waiting for the super admin to approve it. This screen opens automatically once it is approved.</>
-        : expired
-          ? <>Your {sub.trial_days ?? 30}-day access period for <strong>{sub.org_name}</strong> has ended. Submit a renewal request below, or contact the super admin to renew your shop.</>
-          : <>Choose the package you want for <strong>{sub.org_name}</strong> and submit your request. The super admin must approve it before your shop opens.</>}</p>
+        : deactivated
+          ? <>The shop <strong>{sub.org_name}</strong> has been deactivated by the super admin and is locked until it is reactivated. Contact the super admin on the numbers below to reactivate your shop. This screen opens automatically once it is reactivated.</>
+          : expired
+            ? <>Your {sub.trial_days ?? 30}-day access period for <strong>{sub.org_name}</strong> has ended. Submit a renewal request below, or contact the super admin to renew your shop.</>
+            : <>Choose the package you want for <strong>{sub.org_name}</strong> and submit your request. The super admin must approve it before your shop opens.</>}</p>
       {pending && requested && <p className="muted" style={{ fontSize: '0.85rem', marginTop: '0.75rem' }}>Submitted {requested} · Package: {planLabels[sub.plan_type]}</p>}
-      {!pending && <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '0.75rem', margin: '1.25rem 0', textAlign: 'left' }}>
+      {!pending && !deactivated && <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '0.75rem', margin: '1.25rem 0', textAlign: 'left' }}>
         {plans.map(plan => <button type="button" key={plan.id} onClick={() => setPlanType(plan.id)} style={{ border: plan.primary ? '1.5px solid #16a34a' : '1px solid #e5e7eb', borderRadius: 12, padding: '1rem', background: plan.primary ? '#f0fdf4' : '#fff', cursor: 'pointer', textAlign: 'left' }}>
           <p style={{ margin: 0, fontSize: '0.78rem', fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: plan.primary ? '#16a34a' : '#374151' }}>{plan.name}{plan.primary && <span style={{ float: 'right', color: '#16a34a' }}><Check size={14} /></span>}</p>
           <p style={{ margin: '0.15rem 0 0', fontSize: '1.25rem', fontWeight: 700, color: '#111827' }}>${plan.price.toFixed(2)}<span style={{ fontSize: '0.72rem', fontWeight: 500, color: '#6b7280' }}> / month</span></p>
           <p className="muted" style={{ fontSize: '0.8rem', margin: '0.35rem 0 0' }}>{plan.desc}</p>
         </button>)}
       </div>}
-      {!pending && <button className="button button-primary" style={{ width: '100%' }} disabled={busy} onClick={submitRequest}>{busy ? 'Submitting...' : 'Submit request'}</button>}
+      {!pending && !deactivated && <button className="button button-primary" style={{ width: '100%' }} disabled={busy} onClick={submitRequest}>{busy ? 'Submitting...' : 'Submit request'}</button>}
       {notice && <div className="auth-error" style={{ marginTop: '0.75rem' }}>{notice}</div>}
-      {(pending || notice) && <div style={{ marginTop: '1rem', padding: '1rem', border: '1px solid #e5e7eb', borderRadius: 12, background: '#f9fafb', textAlign: 'left' }}>
+      {(pending || deactivated || notice) && <div style={{ marginTop: '1rem', padding: '1rem', border: '1px solid #e5e7eb', borderRadius: 12, background: '#f9fafb', textAlign: 'left' }}>
         <p className="panel-kicker" style={{ margin: 0 }}>Contact the super admin for approval</p>
         <p className="muted" style={{ fontSize: '0.85rem', margin: '0.35rem 0 0.75rem' }}>Call the super admin on any of these numbers so your shop can be approved:</p>
         <div style={{ display: 'grid', gap: '0.5rem' }}>
           {superAdminContacts.map(contact => <a key={contact.raw} className="button button-secondary" style={{ width: '100%', textDecoration: 'none', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.4rem' }} href={`tel:${contact.raw}`}><Phone size={16} />{contact.label}</a>)}
         </div>
       </div>}
-      <p className="muted" style={{ fontSize: '0.85rem', marginTop: '0.85rem' }}>Once approved, your shop works for {sub.trial_days ?? 30} days. Contact the super admin when you need a renewal.</p>
+      {!deactivated && <p className="muted" style={{ fontSize: '0.85rem', marginTop: '0.85rem' }}>Once approved, your shop works for {sub.trial_days ?? 30} days. Contact the super admin when you need a renewal.</p>}
       <button className="text-button" style={{ marginTop: '0.5rem' }} onClick={onSignOut}><LogOut size={15} />Sign out</button>
     </div>
   </div>
@@ -487,7 +509,7 @@ function BillingPage({ sub, onRefresh }: { sub: Subscription; onRefresh: () => P
     } catch (err) { setNotice(err instanceof Error ? err.message : 'Unable to submit request') } finally { setBusy(false) }
   }
   const expiry = sub.expires_at ? new Intl.DateTimeFormat('en', { month: 'short', day: 'numeric', year: 'numeric' }).format(new Date(sub.expires_at)) : 'â€”'
-  const statusLabel = sub.status === 'pending' ? 'Pending approval' : sub.status === 'expired' ? 'Expired' : sub.status === 'active' ? 'Active' : 'Locked'
+  const statusLabel = sub.status === 'pending' ? 'Pending approval' : sub.status === 'expired' ? 'Expired' : sub.status === 'active' ? 'Active' : sub.status === 'deactivated' ? 'Deactivated' : 'Locked'
   const nearMemberLimit = sub.members_allowed != null && sub.members_used >= sub.members_allowed
   return <div className="content-stack">
     <section className="panel">

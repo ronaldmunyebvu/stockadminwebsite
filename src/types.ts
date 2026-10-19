@@ -18,7 +18,7 @@ export interface AdminData { org: { id: string; name: string; variance_threshold
 
 export interface PlanInfo { price: number; label: string; description: string; members: number | null; skus: number | null; branches: number | null }
 export type PlanType = 'basic' | 'standard' | 'unlimited'
-export type ShopStatus = 'pending' | 'active' | 'expired' | 'inactive'
+export type ShopStatus = 'pending' | 'active' | 'expired' | 'inactive' | 'deactivated'
 export interface Subscription {
   org_id?: string
   org_name: string

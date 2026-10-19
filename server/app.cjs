@@ -123,7 +123,7 @@ function normalizeMsisdn(value) { const digits = String(value || '').replace(/[^
 function subscriptionFromRow(org, usage) {
   const now = new Date()
   const expired = Boolean(org.plan_expires_at && new Date(org.plan_expires_at) <= now)
-  const status = org.plan_status === 'pending' ? 'pending' : org.plan_status === 'active' ? (expired ? 'expired' : 'active') : 'inactive'
+  const status = org.plan_status === 'pending' ? 'pending' : org.plan_status === 'deactivated' ? 'deactivated' : org.plan_status === 'active' ? (expired ? 'expired' : 'active') : 'inactive'
   const plan_type = normalizePlanType(org.plan_type)
   const plan = PRICING[plan_type] || PRICING.basic
   return {
@@ -163,6 +163,7 @@ async function getSubscription(orgId) {
 const BILLING_OPEN_PATHS = new Set(['/api/health', '/api/auth/login', '/api/auth/logout', '/api/auth/signup', '/api/auth/admin/signup', '/api/auth/otp/send', '/api/auth/otp/verify', '/api/auth/reset-password', '/api/auth/confirm-email', '/api/auth/invite/verify', '/api/auth/invite/request', '/api/auth/invite/complete', '/api/mobile/org', '/api/payments/status', '/api/billing/status', '/api/billing/request'])
 
 function lockMessageFor(org) {
+  if (org.plan_status === 'deactivated') return 'This shop has been deactivated by the super admin and cannot be used until it is reactivated. Contact the super admin for assistance.'
   if (org.plan_status === 'pending') return 'Your shop request is awaiting approval by the super admin. Your workspace will open as soon as it is approved.'
   if (org.plan_status === 'active' && org.plan_expires_at && new Date(org.plan_expires_at) <= new Date()) return `Your shop's ${TRIAL_DAYS}-day access has ended. Contact the super admin to renew your shop.`
   return 'Your shop is locked. Contact the super admin to approve or renew your shop.'
@@ -178,7 +179,7 @@ function requirePaid(req, res, next) {
     const org = rows[0]
     if (!org) return next()
     const active = org.plan_status === 'active' && (!org.plan_expires_at || new Date(org.plan_expires_at) > new Date())
-    if (!active) return res.status(402).json({ error: lockMessageFor(org), code: 'SUBSCRIPTION_REQUIRED', status: org.plan_status === 'pending' ? 'pending' : org.plan_expires_at && new Date(org.plan_expires_at) <= new Date() ? 'expired' : 'inactive' })
+    if (!active) return res.status(402).json({ error: lockMessageFor(org), code: 'SUBSCRIPTION_REQUIRED', status: org.plan_status === 'deactivated' ? 'deactivated' : org.plan_status === 'pending' ? 'pending' : org.plan_expires_at && new Date(org.plan_expires_at) <= new Date() ? 'expired' : 'inactive' })
     next()
   }).catch(() => next())
 }
