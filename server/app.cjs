@@ -58,6 +58,9 @@ async function runColumnMigrations() { if (!pool || !shouldRunMigrations) return
   await pool.query("DO $$ BEGIN ALTER TABLE sales DROP CONSTRAINT IF EXISTS sales_item_id_fkey; ALTER TABLE sales ADD CONSTRAINT sales_item_id_fkey FOREIGN KEY (item_id) REFERENCES items(id) ON DELETE SET NULL; EXCEPTION WHEN others THEN NULL; END $$").catch(err => console.error('Migration sales fk failed:', err.message))
   await pool.query("ALTER TABLE sales ADD COLUMN IF NOT EXISTS item_name text").catch(err => console.error('Migration sales item_name failed:', err.message))
   await pool.query("UPDATE sales s SET item_name = i.name FROM items i WHERE s.item_id = i.id AND s.item_name IS NULL").catch(() => {})
+  await pool.query("ALTER TABLE count_sessions ADD COLUMN IF NOT EXISTS report_status text NOT NULL DEFAULT 'pending'").catch(err => console.error('Migration report_status failed:', err.message))
+  await pool.query("ALTER TABLE count_sessions ADD COLUMN IF NOT EXISTS report_data jsonb").catch(err => console.error('Migration report_data failed:', err.message))
+  await pool.query("ALTER TABLE count_sessions ADD COLUMN IF NOT EXISTS report_submitted_at timestamptz").catch(err => console.error('Migration report_submitted_at failed:', err.message))
   await pool.query(`CREATE TABLE IF NOT EXISTS quotations (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     org_id uuid NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
@@ -370,6 +373,47 @@ app.post('/api/auth/reset-password', requireDatabase, async (req, res) => {
 app.get('/api/auth/confirm-email', async (req, res) => { if (!pool) return res.status(503).send('Database is not configured'); const result = await pool.query('update users set email_verified = true, email_confirmation_token = null where email_confirmation_token = $1 returning email', [req.query.token]); if (!result.rowCount) return res.status(400).send('This confirmation link is invalid or expired.'); const baseUrl = process.env.PUBLIC_API_URL || `${req.protocol}://${req.get('host')}`; res.redirect(303, `${baseUrl.replace(/\/$/, '')}/?confirmed=1`) })
 app.post('/api/auth/logout', requireDatabase, auth, async (req, res) => { try { if (req.user.sid) await pool.query('update user_sessions set revoked_at = now() where id=$1 and user_id=$2', [req.user.sid, req.user.id]) } catch (err) { console.error('Logout failed:', err.message) } res.json({ ok: true }) })
 app.post('/api/auth/login', requireDatabase, async (req, res) => { const identifier = normalizeIdentifier(req.body.identifier || req.body.email); const { password, role } = req.body; const result = await pool.query(findUserByIdentifier, [identifier, identifier]); const user = result.rows[0]; if (!user || (role && user.role !== role) || !user.password_hash || !(await bcrypt.compare(password, user.password_hash))) return res.status(401).json({ error: 'Invalid credentials' }); if (!user.email_verified) return res.status(403).json({ error: 'Verify your email or phone with the code we sent before signing in' }); const active = await pool.query('select 1 from user_sessions where user_id=$1 and revoked_at is null and expires_at > now()', [user.id]); if (active.rowCount) return res.status(409).json({ error: 'This account is already signed in on another device. Sign out there first, then try again.' }); await pool.query('delete from user_sessions where user_id=$1 and (revoked_at is not null or expires_at <= now())', [user.id]); const sid = crypto.randomUUID(); const token = issueToken(user, sid); try { await pool.query('insert into user_sessions (id, user_id, org_id, token_sig, expires_at) values ($1,$2,$3,$4, now() + $5::interval)', [sid, user.id, user.org_id, crypto.createHash('sha256').update(token).digest('hex'), '12 hours']) } catch (err) { if (err.code === '23505') return res.status(409).json({ error: 'This account is already signed in on another device. Sign out there first, then try again.' }); console.error('Session create failed:', err.message); return res.status(500).json({ error: 'Unable to start a session. Please try again.' }) } res.json({ token, user: publicUser(user), subscription: await getSubscription(user.org_id) }) })
+async function startUserSession(user, res) {
+  const active = await pool.query('select 1 from user_sessions where user_id=$1 and revoked_at is null and expires_at > now()', [user.id])
+  if (active.rowCount) return res.status(409).json({ error: 'This account is already signed in on another device. Sign out there first, then try again.' })
+  await pool.query('delete from user_sessions where user_id=$1 and (revoked_at is not null or expires_at <= now())', [user.id])
+  const sid = crypto.randomUUID()
+  const token = issueToken(user, sid)
+  try {
+    await pool.query('insert into user_sessions (id, user_id, org_id, token_sig, expires_at) values ($1,$2,$3,$4, now() + $5::interval)', [sid, user.id, user.org_id, crypto.createHash('sha256').update(token).digest('hex'), '12 hours'])
+  } catch (error) {
+    if (error.code === '23505') return res.status(409).json({ error: 'This account is already signed in on another device. Sign out there first, then try again.' })
+    console.error('Session create failed:', error.message)
+    return res.status(500).json({ error: 'Unable to start a session. Please try again.' })
+  }
+  return res.json({ token, user: publicUser(user), subscription: await getSubscription(user.org_id) })
+}
+app.post('/api/auth/login/otp/request', requireDatabase, async (req, res) => {
+  const identifier = normalizeIdentifier(req.body.identifier || req.body.email)
+  const { password, role } = req.body
+  if (!isPhoneIdentifier(identifier)) return res.status(400).json({ error: 'Enter a valid phone number to request a sign-in code' })
+  const result = await pool.query(findUserByIdentifier, [identifier, identifier])
+  const user = result.rows[0]
+  if (!user || (role && user.role !== role) || !user.password_hash || !(await bcrypt.compare(password, user.password_hash))) return res.status(401).json({ error: 'Invalid credentials' })
+  if (!user.email_verified) return res.status(403).json({ error: 'Verify your phone number using the invitation code before signing in' })
+  try {
+    const otp = await issueOtp(user, 'login', identifier)
+    res.json({ ok: true, channel: otp.channel, code: process.env.NODE_ENV === 'production' ? undefined : otp.code })
+  } catch (error) {
+    res.status(error.status || 502).json({ error: error.message || 'Unable to send sign-in code' })
+  }
+})
+app.post('/api/auth/login/otp/verify', requireDatabase, async (req, res) => {
+  const identifier = normalizeIdentifier(req.body.identifier || req.body.email)
+  const code = String(req.body.code || '').trim()
+  const { role } = req.body
+  const result = await pool.query(findUserByIdentifier, [identifier, identifier])
+  const user = result.rows[0]
+  if (!user || (role && user.role !== role) || !user.otp_code || user.otp_code !== code || !user.otp_expires_at || new Date(user.otp_expires_at) < new Date() || user.otp_purpose !== 'login') return res.status(400).json({ error: 'Invalid or expired sign-in code' })
+  const consumed = await pool.query("update users set otp_code=null, otp_expires_at=null, otp_purpose=null where id=$1 and otp_code=$2 and otp_purpose='login' and otp_expires_at > now() returning *", [user.id, code])
+  if (!consumed.rowCount) return res.status(400).json({ error: 'Invalid or expired sign-in code' })
+  return startUserSession(consumed.rows[0], res)
+})
 app.post('/api/auth/invite/verify', requireDatabase, async (req, res) => { const { shopName, role, code } = req.body; const identifier = normalizeIdentifier(req.body.identifier || req.body.email); const result = await pool.query("select u.* from users u join organizations o on o.id = u.org_id where lower(o.name) = lower($1) and u.role = $3 and u.invite_code = $4 and u.is_active = true and (lower(coalesce(u.email,'')) = lower($2) or regexp_replace(coalesce(u.phone,''), '[^0-9]', '', 'g') = regexp_replace($5, '[^0-9]', '', 'g'))", [shopName, identifier, role, code, identifier]); if (!result.rowCount) return res.status(400).json({ error: 'Invalid invitation details' }); res.json({ user: publicUser(result.rows[0]) }) })
 app.post('/api/auth/invite/request', requireDatabase, async (req, res) => { const { shopName, role } = req.body; const identifier = normalizeIdentifier(req.body.identifier || req.body.email); const result = await pool.query("select u.* from users u join organizations o on o.id = u.org_id where lower(o.name) = lower($1) and u.role = $3 and u.is_active = true and u.setup_status = $4 and (lower(coalesce(u.email,'')) = lower($2) or regexp_replace(coalesce(u.phone,''), '[^0-9]', '', 'g') = regexp_replace($5, '[^0-9]', '', 'g'))", [shopName, identifier, role, 'invited', identifier]); if (!result.rowCount) return res.status(400).json({ error: 'No active invitation matches that shop, email or phone, and role' }); const code = makeCode(); await pool.query('update users set invite_code=$1 where id=$2', [code, result.rows[0].id]); const channel = await deliverCode(identifier, code, 'invitation'); res.json({ channel, code: process.env.NODE_ENV === 'production' ? undefined : code }) })
 app.post('/api/auth/invite/complete', requireDatabase, async (req, res) => { const { userId, fullName, password } = req.body; if (!userId || !fullName || !password || password.length < 6) return res.status(400).json({ error: 'Name and a password of at least 6 characters are required' }); const passwordHash = await bcrypt.hash(password, 10); const result = await pool.query('update users set full_name=$1, password_hash=$2, setup_status=$3, email_verified=true, invite_code=null where id=$4 and is_active=true and setup_status=$5 returning id,org_id,role,full_name,email,phone,is_active,setup_status,created_at', [fullName.trim(), passwordHash, 'setup_complete', userId, 'invited']); if (!result.rowCount) return res.status(400).json({ error: 'Invitation setup is no longer available' }); res.json(publicUser(result.rows[0])) })
@@ -521,6 +565,124 @@ app.get('/api/mobile/items/barcode/:barcode', requireDatabase, auth, async (req,
 app.get('/api/mobile/audit-logs', requireDatabase, auth, async (req, res) => { const result = await pool.query('select * from audit_logs where org_id=$1 order by created_at desc limit 100', [req.user.orgId]); res.json(result.rows) })
 app.post('/api/mobile/audit-logs', requireDatabase, auth, async (req, res) => { const { entityType, entityId, note } = req.body; const result = await pool.query('insert into audit_logs (org_id,entity_type,entity_id,action,actor_id,payload) values ($1,$2,$3,$4,$5,$6) returning *', [req.user.orgId, entityType, entityId, 'note', req.user.id, JSON.stringify({ note })]); res.status(201).json(result.rows[0]) })
 
+app.post('/api/mobile/sales', requireDatabase, auth, async (req, res) => {
+  const { itemId, quantity, unitPrice } = req.body
+  if (!itemId || !quantity || Number(quantity) <= 0) return res.status(400).json({ error: 'A valid product and quantity are required' })
+  const client = await pool.connect()
+  try {
+    await client.query('BEGIN')
+    const item = await client.query('select * from items where id=$1 and org_id=$2', [itemId, req.user.orgId])
+    if (!item.rowCount) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Product not found' }) }
+    const available = Number(item.rows[0].system_qty)
+    const qty = Number(quantity)
+    if (qty > available) { await client.query('ROLLBACK'); return res.status(400).json({ error: `Insufficient stock. Only ${available} available` }) }
+    const dbPrice = Number(item.rows[0].selling_price)
+    const price = dbPrice > 0 ? dbPrice : (Number(unitPrice) || 0)
+    const total = qty * price
+    const result = await client.query('insert into sales (org_id,item_id,seller_id,quantity,unit_price,total,sold_at) values ($1,$2,$3,$4,$5,$6,now()) returning *', [req.user.orgId, itemId, req.user.id, qty, price, total])
+    await client.query('update items set system_qty = system_qty - $1, updated_at = now() where id = $2 and org_id = $3', [qty, itemId, req.user.orgId])
+    await client.query("insert into audit_logs (org_id,entity_type,entity_id,action,actor_id,payload) values ($1,$2,$3,$4,$5,$6)", [req.user.orgId, 'sale', result.rows[0].id, 'recorded', req.user.id, JSON.stringify({ item_id: itemId, quantity: qty, unit_price: price, total })])
+    await client.query('COMMIT')
+    const updatedItem = await client.query('select system_qty from items where id=$1', [itemId])
+    res.status(201).json({ ...result.rows[0], item: { id: item.rows[0].id, name: item.rows[0].name, sku: item.rows[0].sku, unit: item.rows[0].unit, barcode: item.rows[0].barcode, selling_price: dbPrice, system_qty: updatedItem.rows[0]?.system_qty } })
+  } catch (error) {
+    await client.query('ROLLBACK')
+    res.status(500).json({ error: error.message })
+  } finally {
+    client.release()
+  }
+})
+
+app.get('/api/mobile/sales', requireDatabase, auth, async (req, res) => {
+  const params = [req.user.orgId]
+  let sql = 'select s.*, coalesce(s.item_name, i.name) as item_name, i.sku, i.unit as item_unit, i.barcode as item_barcode from sales s left join items i on i.id=s.item_id where s.org_id=$1'
+  if (req.query.day) { params.push(req.query.day); sql += ` and date(s.sold_at) = $${params.length}::date` }
+  if (req.query.sellerId) { params.push(req.query.sellerId); sql += ` and s.seller_id = $${params.length}` }
+  sql += ' order by s.sold_at desc'
+  const result = await pool.query(sql, params)
+  res.json(result.rows)
+})
+
+function latestEntries(rows) {
+  const byItem = new Map()
+  for (const row of rows) {
+    const existing = byItem.get(row.item_id)
+    if (!existing || (row.count_round ?? 1) >= (existing.count_round ?? 1)) byItem.set(row.item_id, row)
+  }
+  return [...byItem.values()].sort((a, b) => String(a.name || a.item_name || '').localeCompare(String(b.name || b.item_name || '')))
+}
+
+app.post('/api/mobile/sessions/:id/report', requireDatabase, auth, async (req, res) => {
+  const { auditorRemarks, submit } = req.body
+  const sessionQuery = await pool.query(`select s.*, o.name as org_name, l.name as location_name, z.name as zone_name, cu.full_name as counter_name, au.full_name as auditor_name from count_sessions s join organizations o on o.id=s.org_id left join locations l on l.id=s.location_id left join zones z on z.id=s.zone_id left join users cu on cu.id=s.assigned_counter_id left join users au on au.id=s.auditor_id where s.id=$1 and s.org_id=$2 and s.auditor_id=$3`, [req.params.id, req.user.orgId, req.user.id])
+  if (!sessionQuery.rowCount) return res.status(404).json({ error: 'Session not found or not assigned to your review' })
+  const s = sessionQuery.rows[0]
+  const entriesQuery = await pool.query(`select e.*, i.name as item_name, i.sku, i.barcode, i.unit, i.category from count_entries e join items i on i.id=e.item_id where e.session_id=$1 order by e.count_round`, [req.params.id])
+  const logsQuery = await pool.query(`select al.*, u.full_name as actor_name from audit_logs al left join users u on u.id=al.actor_id where al.org_id=$1 and al.entity_type='session' and al.entity_id=$2 and al.action='note' order by al.created_at`, [req.user.orgId, req.params.id])
+
+  const latest = latestEntries(entriesQuery.rows)
+  const summary = {
+    total_items: (Array.isArray(s.item_ids) && s.item_ids.length ? s.item_ids.length : latest.length),
+    counted_items: latest.length,
+    matched_items: latest.filter(e => Number(e.variance) === 0).length,
+    variance_items: latest.filter(e => Number(e.variance) !== 0).length,
+    flagged_items: latest.filter(e => e.is_flagged).length,
+    net_variance: latest.reduce((sum, e) => sum + Number(e.variance), 0),
+  }
+  const witnesses = entriesQuery.rows.filter(e => e.witnessed && e.witness_name && String(e.witness_name).trim()).map(e => ({ item_name: e.item_name, witness_name: String(e.witness_name).trim() }))
+  const remarks = logsQuery.rows.map(row => ({ id: row.id, actor_name: row.actor_name, text: (row.payload && row.payload.note) || row.reason || '', created_at: row.created_at }))
+  const now = new Date().toISOString()
+  const report = {
+    version: 1,
+    session_id: s.id,
+    session_name: s.name,
+    org_name: s.org_name,
+    location_name: s.location_name || null,
+    zone_name: s.zone_name || null,
+    mode: s.mode,
+    counter_name: s.counter_name || 'Unassigned',
+    auditor_name: s.auditor_name || req.user.email,
+    count_completed_at: s.submitted_at || null,
+    approved_at: s.approved_at || null,
+    report_prepared_at: now,
+    report_submitted_at: submit ? now : null,
+    review_outcome: s.status === 'approved' ? 'approved' : s.status === 'rejected' ? 'rejected' : null,
+    rejection_reason: s.reject_reason || null,
+    auditor_remarks: typeof auditorRemarks === 'string' && auditorRemarks.trim() ? auditorRemarks.trim() : null,
+    summary,
+    witnesses,
+    remarks,
+    entries: latest.map(e => ({
+      item_id: e.item_id, name: e.item_name, sku: e.sku, barcode: e.barcode || null, unit: e.unit || 'unit', category: e.category || null,
+      system_qty: Number(e.system_qty), counted_qty: Number(e.counted_qty), variance: Number(e.variance),
+      is_flagged: e.is_flagged, count_round: e.count_round ?? 1, witnessed: Boolean(e.witnessed),
+      witness_name: e.witness_name || null, notes: e.notes || null, counted_at: e.counted_at,
+    })),
+  }
+  const status = submit ? 'submitted' : 'prepared'
+  await pool.query('update count_sessions set report_status=$1, report_data=$2, report_submitted_at=$3, updated_at=now() where id=$4', [status, JSON.stringify(report), submit ? now : null, req.params.id])
+  await pool.query("insert into audit_logs (org_id,entity_type,entity_id,action,actor_id,payload) values ($1,$2,$3,$4,$5,$6)", [req.user.orgId, 'session', req.params.id, submit ? 'report_submitted' : 'report_prepared', req.user.id, JSON.stringify({})])
+  const saved = await pool.query('select * from count_sessions where id=$1', [req.params.id])
+  res.json(saved.rows[0])
+})
+
+app.get('/api/mobile/sessions/:id/report', requireDatabase, auth, async (req, res) => {
+  const result = await pool.query('select * from count_sessions where id=$1 and org_id=$2 and auditor_id=$3', [req.params.id, req.user.orgId, req.user.id])
+  if (!result.rowCount) return res.status(404).json({ error: 'Report not found' })
+  res.json(result.rows[0])
+})
+
+app.get('/api/admin/reports', requireDatabase, auth, adminOnly, async (req, res) => {
+  const result = await pool.query(`select s.id as session_id, s.name, s.status, s.mode, s.report_status, s.report_submitted_at, s.submitted_at, s.approved_at, s.report_data, cu.full_name as counter_name, au.full_name as auditor_name, l.name as location_name, z.name as zone_name from count_sessions s left join users cu on cu.id=s.assigned_counter_id left join users au on au.id=s.auditor_id left join locations l on l.id=s.location_id left join zones z on z.id=s.zone_id where s.org_id=$1 and s.report_status='submitted' order by s.report_submitted_at desc nulls last, s.created_at desc`, [req.user.orgId])
+  res.json(result.rows)
+})
+
+app.get('/api/admin/reports/:sessionId', requireDatabase, auth, adminOnly, async (req, res) => {
+  const result = await pool.query(`select s.*, o.name as org_name, cu.full_name as counter_name, au.full_name as auditor_name, l.name as location_name, z.name as zone_name from count_sessions s join organizations o on o.id=s.org_id left join users cu on cu.id=s.assigned_counter_id left join users au on au.id=s.auditor_id left join locations l on l.id=s.location_id left join zones z on z.id=s.zone_id where s.id=$1 and s.org_id=$2`, [req.params.sessionId, req.user.orgId])
+  if (!result.rowCount) return res.status(404).json({ error: 'Report not found' })
+  res.json(result.rows[0])
+})
+
 app.get('/api/admin/sessions/:id/entries', requireDatabase, auth, adminOnly, async (req, res) => { const result = await pool.query('select e.*, i.name as item_name, i.sku, i.unit as item_unit, u.full_name as counter_name from count_entries e join count_sessions s on s.id=e.session_id and s.org_id=$2 join items i on i.id=e.item_id left join users u on u.id=e.counted_by where e.session_id=$1 order by i.name, e.count_round desc', [req.params.id, req.user.orgId]); res.json(result.rows.map(row => ({ ...row, item: { id: row.item_id, name: row.item_name, sku: row.sku, unit: row.item_unit }, counter: row.counted_by ? { id: row.counted_by, full_name: row.counter_name } : null }))) })
 
 app.delete('/api/admin/sessions/:id', requireDatabase, auth, adminOnly, async (req, res) => { const session = await pool.query('select id, status from count_sessions where id=$1 and org_id=$2', [req.params.id, req.user.orgId]); if (!session.rowCount) return res.status(404).json({ error: 'Session not found' }); if (session.rows[0].status === 'in_progress') return res.status(400).json({ error: 'Cannot delete a session that is currently in progress' }); const client = await pool.connect(); try { await client.query('BEGIN'); await client.query('delete from count_entries where session_id=$1', [req.params.id]); await client.query('delete from count_reports where session_id=$1', [req.params.id]); await client.query('delete from count_sessions where id=$1 and org_id=$2', [req.params.id, req.user.orgId]); await client.query('COMMIT'); res.json({ success: true }) } catch (error) { await client.query('ROLLBACK'); res.status(500).json({ error: 'Unable to delete session' }) } finally { client.release() } })
@@ -565,6 +727,36 @@ app.post('/api/quotations', requireDatabase, auth, async (req, res) => {
     const saved = await pool.query('select q.*, u.full_name as seller_name, o.name as org_name, o.logo_url, o.tagline from quotations q left join users u on u.id=q.seller_id join organizations o on o.id=q.org_id where q.id=$1', [q.rows[0].id])
     const savedItems = await pool.query('select * from quotation_items where quotation_id=$1 order by id', [q.rows[0].id])
     res.status(201).json({ ...saved.rows[0], items: savedItems.rows })
+  } catch (error) { await client.query('ROLLBACK'); res.status(400).json({ error: error.message }) } finally { client.release() }
+})
+
+app.post('/api/quotations/:id/sale', requireDatabase, auth, async (req, res) => {
+  const client = await pool.connect()
+  try {
+    await client.query('BEGIN')
+    const q = await client.query('select * from quotations where id=$1 and org_id=$2 for update', [req.params.id, req.user.orgId])
+    if (!q.rowCount) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Quotation not found' }) }
+    const quote = q.rows[0]
+    if (quote.status === 'sold') { await client.query('ROLLBACK'); return res.status(400).json({ error: 'This quotation has already been recorded as a sale' }) }
+    const lines = await client.query('select * from quotation_items where quotation_id=$1 order by id', [req.params.id])
+    if (!lines.rowCount) { await client.query('ROLLBACK'); return res.status(400).json({ error: 'This quotation has no products to record' }) }
+    for (const line of lines.rows) {
+      const qty = Number(line.quantity)
+      const price = Number(line.unit_price)
+      const it = await client.query('select * from items where id=$1 for update', [line.item_id])
+      if (it.rowCount) {
+        const available = Number(it.rows[0].system_qty)
+        if (qty > available) { await client.query('ROLLBACK'); return res.status(400).json({ error: `Insufficient stock for ${line.item_name}. Only ${available} ${it.rows[0].unit} available` }) }
+        await client.query('update items set system_qty = system_qty - $1, updated_at = now() where id = $2', [qty, line.item_id])
+      }
+      await client.query('insert into sales (org_id, item_id, seller_id, quantity, unit_price, total, sold_at, item_name) values ($1,$2,$3,$4,$5,$6,now(),$7)', [req.user.orgId, line.item_id, req.user.id, qty, price, qty * price, line.item_name])
+    }
+    await client.query("update quotations set status='sold' where id=$1", [req.params.id])
+    await client.query("insert into audit_logs (org_id,entity_type,entity_id,action,actor_id,payload) values ($1,$2,$3,$4,$5,$6)", [req.user.orgId, 'quotation', req.params.id, 'recorded_as_sale', req.user.id, JSON.stringify({ reference: quote.reference, lines: lines.rowCount })])
+    await client.query('COMMIT')
+    const saved = await client.query('select q.*, u.full_name as seller_name, u.phone as seller_phone, o.name as org_name, o.logo_url, o.tagline, o.address as org_address from quotations q left join users u on u.id=q.seller_id join organizations o on o.id=q.org_id where q.id=$1', [req.params.id])
+    const savedItems = await client.query('select * from quotation_items where quotation_id=$1 order by id', [req.params.id])
+    res.json({ ...saved.rows[0], items: savedItems.rows })
   } catch (error) { await client.query('ROLLBACK'); res.status(400).json({ error: error.message }) } finally { client.release() }
 })
 
