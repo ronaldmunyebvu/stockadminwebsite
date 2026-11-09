@@ -57,6 +57,27 @@ async function runColumnMigrations() { if (!pool || !shouldRunMigrations) return
   await pool.query("ALTER TABLE sales ALTER COLUMN item_id DROP NOT NULL").catch(err => console.error('Migration sales item_id nullable failed:', err.message))
   await pool.query("DO $$ BEGIN ALTER TABLE sales DROP CONSTRAINT IF EXISTS sales_item_id_fkey; ALTER TABLE sales ADD CONSTRAINT sales_item_id_fkey FOREIGN KEY (item_id) REFERENCES items(id) ON DELETE SET NULL; EXCEPTION WHEN others THEN NULL; END $$").catch(err => console.error('Migration sales fk failed:', err.message))
   await pool.query("ALTER TABLE sales ADD COLUMN IF NOT EXISTS item_name text").catch(err => console.error('Migration sales item_name failed:', err.message))
+  await pool.query("ALTER TABLE sales ADD COLUMN IF NOT EXISTS discount numeric NOT NULL DEFAULT 0").catch(err => console.error('Migration sales discount failed:', err.message))
+  await pool.query(`CREATE TABLE IF NOT EXISTS credits (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    org_id uuid NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    customer_name text NOT NULL,
+    customer_contact text,
+    item_id uuid REFERENCES items(id) ON DELETE SET NULL,
+    item_name text,
+    quantity numeric NOT NULL DEFAULT 1 CHECK (quantity > 0),
+    unit_price numeric NOT NULL DEFAULT 0,
+    amount numeric NOT NULL DEFAULT 0 CHECK (amount >= 0),
+    notes text,
+    status text NOT NULL DEFAULT 'outstanding' CHECK (status IN ('outstanding','settled')),
+    recorded_by uuid REFERENCES users(id) ON DELETE SET NULL,
+    settled_by uuid REFERENCES users(id) ON DELETE SET NULL,
+    settled_at timestamptz,
+    created_at timestamptz NOT NULL DEFAULT now()
+  )`).then(() => console.log('Migration: credits table ensured')).catch(err => console.error('Migration credits table failed:', err.message))
+  await pool.query("CREATE INDEX IF NOT EXISTS credits_org_idx ON credits(org_id)").catch(() => {})
+  await pool.query("CREATE INDEX IF NOT EXISTS credits_status_idx ON credits(status)").catch(() => {})
+  await pool.query("ALTER TABLE sales ADD COLUMN IF NOT EXISTS credit_id uuid REFERENCES credits(id) ON DELETE SET NULL").catch(err => console.error('Migration sales credit_id failed:', err.message))
   await pool.query("UPDATE sales s SET item_name = i.name FROM items i WHERE s.item_id = i.id AND s.item_name IS NULL").catch(() => {})
   await pool.query("ALTER TABLE count_sessions ADD COLUMN IF NOT EXISTS report_status text NOT NULL DEFAULT 'pending'").catch(err => console.error('Migration report_status failed:', err.message))
   await pool.query("ALTER TABLE count_sessions ADD COLUMN IF NOT EXISTS report_data jsonb").catch(err => console.error('Migration report_data failed:', err.message))
@@ -432,7 +453,7 @@ app.post('/api/billing/request', requireDatabase, auth, async (req, res) => {
   } catch (error) { res.status(500).json({ error: `Unable to submit request: ${error.message}` }) }
 })
 
-app.get('/api/admin/data', requireDatabase, auth, async (req, res) => { const id = req.user.orgId; const [org, users, locations, zones, items, sessions, logs, uploads, reports, sales] = await Promise.all([pool.query('select id,name,logo_url,tagline,address,variance_threshold_pct,variance_threshold_units from organizations where id=$1', [id]), pool.query('select id,org_id,role,full_name,email,phone,is_active,setup_status,created_at from users where org_id=$1 order by created_at', [id]), pool.query('select * from locations where org_id=$1 order by name', [id]), pool.query('select z.* from zones z join locations l on l.id=z.location_id where l.org_id=$1 order by z.name', [id]), pool.query('select * from items where org_id=$1 order by name', [id]), pool.query('select * from count_sessions where org_id=$1 order by created_at desc', [id]), pool.query('select * from audit_logs where org_id=$1 order by created_at desc limit 20', [id]), pool.query('select id,org_id,file_name,columns,rows_preview,raw_data,imported_count,zone_id,uploaded_by,created_at from excel_uploads where org_id=$1 order by created_at desc', [id]), pool.query('select r.*, u.full_name as submitted_by_name from count_reports r left join users u on u.id=r.submitted_by where r.org_id=$1 order by r.created_at desc', [id]), pool.query('select s.*, coalesce(s.item_name, i.name) as item_name, i.sku, i.unit as item_unit, u.full_name as seller_name from sales s left join items i on i.id=s.item_id left join users u on u.id=s.seller_id where s.org_id=$1 order by s.sold_at desc limit 500', [id])]); res.json({ source: 'neon', org: org.rows[0], users: users.rows, locations: locations.rows, zones: zones.rows, items: items.rows, sessions: sessions.rows, logs: logs.rows, uploads: uploads.rows, reports: reports.rows, sales: sales.rows }) })
+app.get('/api/admin/data', requireDatabase, auth, async (req, res) => { const id = req.user.orgId; const [org, users, locations, zones, items, sessions, logs, uploads, reports, sales, credits] = await Promise.all([pool.query('select id,name,logo_url,tagline,address,variance_threshold_pct,variance_threshold_units from organizations where id=$1', [id]), pool.query('select id,org_id,role,full_name,email,phone,is_active,setup_status,created_at from users where org_id=$1 order by created_at', [id]), pool.query('select * from locations where org_id=$1 order by name', [id]), pool.query('select z.* from zones z join locations l on l.id=z.location_id where l.org_id=$1 order by z.name', [id]), pool.query('select * from items where org_id=$1 order by name', [id]), pool.query('select * from count_sessions where org_id=$1 order by created_at desc', [id]), pool.query('select * from audit_logs where org_id=$1 order by created_at desc limit 20', [id]), pool.query('select id,org_id,file_name,columns,rows_preview,raw_data,imported_count,zone_id,uploaded_by,created_at from excel_uploads where org_id=$1 order by created_at desc', [id]), pool.query('select r.*, u.full_name as submitted_by_name from count_reports r left join users u on u.id=r.submitted_by where r.org_id=$1 order by r.created_at desc', [id]), pool.query('select s.*, coalesce(s.item_name, i.name) as item_name, i.sku, i.unit as item_unit, u.full_name as seller_name from sales s left join items i on i.id=s.item_id left join users u on u.id=s.seller_id where s.org_id=$1 order by s.sold_at desc limit 500', [id]), pool.query('select c.*, coalesce(c.item_name, i.name) as item_name, i.sku, i.unit as item_unit, u.full_name as recorded_by_name, su.full_name as settled_by_name from credits c left join items i on i.id=c.item_id left join users u on u.id=c.recorded_by left join users su on su.id=c.settled_by where c.org_id=$1 order by c.created_at desc', [id])]); res.json({ source: 'neon', org: org.rows[0], users: users.rows, locations: locations.rows, zones: zones.rows, items: items.rows, sessions: sessions.rows, logs: logs.rows, uploads: uploads.rows, reports: reports.rows, sales: sales.rows, credits: credits.rows }) })
 app.get('/api/admin/sales', requireDatabase, auth, adminOnly, async (req, res) => {
   const params = [req.user.orgId]
   let where = 'where s.org_id=$1'
@@ -453,6 +474,78 @@ app.get('/api/admin/sales', requireDatabase, auth, adminOnly, async (req, res) =
   const days = [...byDate.values()].sort((a, b) => b.date.localeCompare(a.date))
   res.json({ total_revenue: days.reduce((sum, day) => sum + day.total_revenue, 0), total_sales: days.reduce((sum, day) => sum + day.total_sales, 0), total_items_sold: days.reduce((sum, day) => sum + day.items_sold, 0), days })
 })
+
+const CREDIT_SELECT = 'select c.*, coalesce(c.item_name, i.name) as item_name, i.sku, i.unit as item_unit, u.full_name as recorded_by_name, su.full_name as settled_by_name from credits c left join items i on i.id=c.item_id left join users u on u.id=c.recorded_by left join users su on su.id=c.settled_by'
+
+app.get('/api/admin/credits', requireDatabase, auth, adminOnly, async (req, res) => {
+  const result = await pool.query(`${CREDIT_SELECT} where c.org_id=$1 order by c.created_at desc`, [req.user.orgId])
+  res.json(result.rows)
+})
+
+app.post('/api/admin/credits', requireDatabase, auth, adminOnly, async (req, res) => {
+  const { customer_name, customer_contact, item_id, quantity, unit_price, amount, notes } = req.body
+  const customerName = String(customer_name || '').trim()
+  if (!customerName) return res.status(400).json({ error: 'Customer name is required' })
+  const qty = Number(quantity) || 1
+  if (!(qty > 0)) return res.status(400).json({ error: 'Quantity must be greater than zero' })
+  const client = await pool.connect()
+  try {
+    await client.query('BEGIN')
+    let itemName = null
+    let unitPrice = Number(unit_price) || 0
+    if (item_id) {
+      const found = await client.query('select * from items where id=$1 and org_id=$2 for update', [item_id, req.user.orgId])
+      if (!found.rowCount) throw new Error('Product not found')
+      itemName = found.rows[0].name
+      if (!unitPrice) unitPrice = Number(found.rows[0].selling_price) || 0
+      const available = Number(found.rows[0].system_qty)
+      if (qty > available) throw new Error(`Insufficient stock. Only ${available} available`)
+      await client.query('update items set system_qty = system_qty - $1, updated_at = now() where id=$2 and org_id=$3', [qty, item_id, req.user.orgId])
+    }
+    const creditAmount = Number(amount) > 0 ? Number(amount) : unitPrice * qty
+    if (!(creditAmount > 0)) throw new Error('Credit amount must be greater than zero')
+    const result = await client.query(
+      'insert into credits (org_id, customer_name, customer_contact, item_id, item_name, quantity, unit_price, amount, notes, recorded_by) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) returning *',
+      [req.user.orgId, customerName, customer_contact ? String(customer_contact).trim() : null, item_id || null, itemName, qty, unitPrice, creditAmount, notes ? String(notes).trim() : null, req.user.id]
+    )
+    await client.query("insert into audit_logs (org_id,entity_type,entity_id,action,actor_id,payload) values ($1,$2,$3,$4,$5,$6)", [req.user.orgId, 'credit', result.rows[0].id, 'recorded', req.user.id, JSON.stringify({ customer_name: customerName, item_id: item_id || null, quantity: qty, amount: creditAmount })])
+    await client.query('COMMIT')
+    const saved = await pool.query(`${CREDIT_SELECT} where c.id=$1`, [result.rows[0].id])
+    res.status(201).json(saved.rows[0])
+  } catch (error) {
+    await client.query('ROLLBACK')
+    res.status(400).json({ error: error.message })
+  } finally {
+    client.release()
+  }
+})
+
+app.post('/api/admin/credits/:id/settle', requireDatabase, auth, adminOnly, async (req, res) => {
+  const client = await pool.connect()
+  try {
+    await client.query('BEGIN')
+    const creditResult = await client.query("select * from credits where id=$1 and org_id=$2 and status='outstanding' for update", [req.params.id, req.user.orgId])
+    if (!creditResult.rowCount) { await client.query('ROLLBACK'); return res.status(400).json({ error: 'Credit not found or already settled' }) }
+    const credit = creditResult.rows[0]
+    const amount = Number(credit.amount) || 0
+    if (!(amount > 0)) { await client.query('ROLLBACK'); return res.status(400).json({ error: 'Credit amount is invalid' }) }
+    const qty = Number(credit.quantity) || 1
+    const sale = await client.query(
+      'insert into sales (org_id, item_id, seller_id, quantity, unit_price, total, sold_at, item_name, discount, credit_id) values ($1,$2,$3,$4,$5,$6,now(),$7,0,$8) returning *',
+      [req.user.orgId, credit.item_id || null, req.user.id, qty, amount / qty, amount, credit.item_name ? `${credit.item_name} - credit (${credit.customer_name})` : `Credit - ${credit.customer_name}`, credit.id]
+    )
+    const updated = await client.query("update credits set status='settled', settled_by=$1, settled_at=now() where id=$2 returning *", [req.user.id, credit.id])
+    await client.query("insert into audit_logs (org_id,entity_type,entity_id,action,actor_id,payload) values ($1,$2,$3,$4,$5,$6)", [req.user.orgId, 'credit', credit.id, 'settled', req.user.id, JSON.stringify({ customer_name: credit.customer_name, amount, sale_id: sale.rows[0].id })])
+    await client.query('COMMIT')
+    res.json({ credit: updated.rows[0], sale: sale.rows[0] })
+  } catch (error) {
+    await client.query('ROLLBACK')
+    res.status(500).json({ error: error.message })
+  } finally {
+    client.release()
+  }
+})
+
 app.patch('/api/admin/users/:id/status', requireDatabase, auth, adminOnly, async (req, res) => { const result = await pool.query('update users set is_active=$1 where id=$2 and org_id=$3 returning id,org_id,role,full_name,email,phone,is_active,setup_status,created_at', [Boolean(req.body.isActive), req.params.id, req.user.orgId]); res.json(result.rows[0]) })
 app.patch('/api/admin/users/:id', requireDatabase, auth, adminOnly, async (req, res) => {
   try {
@@ -652,7 +745,7 @@ app.get('/api/mobile/audit-logs', requireDatabase, auth, async (req, res) => { c
 app.post('/api/mobile/audit-logs', requireDatabase, auth, async (req, res) => { const { entityType, entityId, note } = req.body; const result = await pool.query('insert into audit_logs (org_id,entity_type,entity_id,action,actor_id,payload) values ($1,$2,$3,$4,$5,$6) returning *', [req.user.orgId, entityType, entityId, 'note', req.user.id, JSON.stringify({ note })]); res.status(201).json(result.rows[0]) })
 
 app.post('/api/mobile/sales', requireDatabase, auth, async (req, res) => {
-  const { itemId, quantity, unitPrice } = req.body
+  const { itemId, quantity, unitPrice, discount } = req.body
   if (!itemId || !quantity || Number(quantity) <= 0) return res.status(400).json({ error: 'A valid product and quantity are required' })
   const client = await pool.connect()
   try {
@@ -664,10 +757,12 @@ app.post('/api/mobile/sales', requireDatabase, auth, async (req, res) => {
     if (qty > available) { await client.query('ROLLBACK'); return res.status(400).json({ error: `Insufficient stock. Only ${available} available` }) }
     const dbPrice = Number(item.rows[0].selling_price)
     const price = dbPrice > 0 ? dbPrice : (Number(unitPrice) || 0)
-    const total = qty * price
-    const result = await client.query('insert into sales (org_id,item_id,seller_id,quantity,unit_price,total,sold_at) values ($1,$2,$3,$4,$5,$6,now()) returning *', [req.user.orgId, itemId, req.user.id, qty, price, total])
+    const gross = qty * price
+    const discountAmount = Math.min(Math.max(Number(discount) || 0, 0), gross)
+    const total = gross - discountAmount
+    const result = await client.query('insert into sales (org_id,item_id,seller_id,quantity,unit_price,discount,total,sold_at) values ($1,$2,$3,$4,$5,$6,$7,now()) returning *', [req.user.orgId, itemId, req.user.id, qty, price, discountAmount, total])
     await client.query('update items set system_qty = system_qty - $1, updated_at = now() where id = $2 and org_id = $3', [qty, itemId, req.user.orgId])
-    await client.query("insert into audit_logs (org_id,entity_type,entity_id,action,actor_id,payload) values ($1,$2,$3,$4,$5,$6)", [req.user.orgId, 'sale', result.rows[0].id, 'recorded', req.user.id, JSON.stringify({ item_id: itemId, quantity: qty, unit_price: price, total })])
+    await client.query("insert into audit_logs (org_id,entity_type,entity_id,action,actor_id,payload) values ($1,$2,$3,$4,$5,$6)", [req.user.orgId, 'sale', result.rows[0].id, 'recorded', req.user.id, JSON.stringify({ item_id: itemId, quantity: qty, unit_price: price, discount: discountAmount, total })])
     await client.query('COMMIT')
     const updatedItem = await client.query('select system_qty from items where id=$1', [itemId])
     res.status(201).json({ ...result.rows[0], item: { id: item.rows[0].id, name: item.rows[0].name, sku: item.rows[0].sku, unit: item.rows[0].unit, barcode: item.rows[0].barcode, selling_price: dbPrice, system_qty: updatedItem.rows[0]?.system_qty } })

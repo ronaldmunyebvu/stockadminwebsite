@@ -1,7 +1,7 @@
 ﻿import { useEffect, useMemo, useRef, useState, type ChangeEvent, type FormEvent, type ReactNode } from 'react'
 import { Activity, Archive, ArrowUpRight, Banknote, Boxes, Check, ChevronDown, CircleHelp, ClipboardList, Cloud, CreditCard, Database, Download, Eye, FileText, LayoutDashboard, Lock, LogOut, Menu, Package, Phone, Plus, RefreshCw, Search, Settings, ShieldCheck, ShoppingCart, SlidersHorizontal, Trash2, UserRound, Users, Wifi, X } from 'lucide-react'
-import { approveSession, createExcelUpload, createItem, createItems, createLocation, createShopAdmin, createZone, createUser, deleteInventory, deleteItem, deleteSession, deleteShop, deleteUser, getPaymentStatus, getSales, getSessionEntries, getSessionReport, isNeonConfigured, loadAdminData, recountSession, rejectSession, resetPassword, scheduleClickCount, sendOtp, signInAdmin, signOutAdmin, submitBillingRequest, submitReport, updateItem, updateOrganization, updateThresholds, updateUser, updateUserStatus, verifyOtp } from './service'
-import type { AdminData, CountEntry, CountReport, DailySales, PlanType, SalesSummary, SessionStatus, Subscription, UserRole } from './types'
+import { approveSession, createCredit, createExcelUpload, createItem, createItems, createLocation, createShopAdmin, createZone, createUser, deleteInventory, deleteItem, deleteSession, deleteShop, deleteUser, getPaymentStatus, getSales, getSessionEntries, getSessionReport, isNeonConfigured, loadAdminData, recountSession, rejectSession, resetPassword, scheduleClickCount, sendOtp, settleCredit, signInAdmin, signOutAdmin, submitBillingRequest, submitReport, updateItem, updateOrganization, updateThresholds, updateUser, updateUserStatus, verifyOtp } from './service'
+import type { AdminData, CountEntry, CountReport, Credit, DailySales, PlanType, SalesSummary, SessionStatus, Subscription, UserRole } from './types'
 import { jsPDF } from 'jspdf'
 import autoTable from 'jspdf-autotable'
 
@@ -17,6 +17,7 @@ const superAdminContacts = [
 const nav = [
   { id: 'overview', label: 'Overview', icon: LayoutDashboard },
   { id: 'sales', label: 'Sales', icon: ShoppingCart },
+  { id: 'credits', label: 'Credits', icon: Banknote },
   { id: 'inventory', label: 'Inventory', icon: Package },
   { id: 'sessions', label: 'Count sessions', icon: ClipboardList },
   { id: 'team', label: 'Team & access', icon: Users },
@@ -42,7 +43,7 @@ export default function App() {
   const [adminReady, setAdminReady] = useState(!isNeonConfigured || Boolean(localStorage.getItem('ClickCount_admin_token')))
   const [sub, setSub] = useState<Subscription | null>(null)
   const [subLoading, setSubLoading] = useState(true)
-  const [dialog, setDialog] = useState<'team' | 'inventory' | 'edit-item' | 'import' | 'schedule' | 'threshold-confirm' | null>(null)
+  const [dialog, setDialog] = useState<'team' | 'inventory' | 'edit-item' | 'import' | 'schedule' | 'threshold-confirm' | 'credit' | null>(null)
   const [editingItem, setEditingItem] = useState<AdminData['items'][number] | null>(null)
   const [selectedSession, setSelectedSession] = useState<string | null>(null)
 
@@ -90,7 +91,7 @@ export default function App() {
   const activePage = nav.find(item => item.id === page) ?? nav[0]
   const handlePage = (next: string) => { setPage(next); setMenuOpen(false); setQuery(''); setSelectedSession(null) }
   const refresh = () => { setLoading(true); loadAdminData().then(setData).catch(error => setNotice(error.message)).finally(() => setLoading(false)) }
-  const handlePrimaryAction = () => setDialog(page === 'team' ? 'team' : page === 'inventory' ? 'inventory' : page === 'sessions' ? 'threshold-confirm' : null)
+  const handlePrimaryAction = () => setDialog(page === 'team' ? 'team' : page === 'inventory' ? 'inventory' : page === 'sessions' ? 'threshold-confirm' : page === 'credits' ? 'credit' : null)
   const adminLabel = (() => { try { const raw = localStorage.getItem('ClickCount_admin_profile'); if (!raw) return ''; const p = JSON.parse(raw); return typeof p.full_name === 'string' && p.full_name.trim() ? p.full_name : '' } catch { return '' } })() || data.users.find(u => u.role === 'admin')?.full_name || 'Administrator'
 
   return <div className="app-shell">
@@ -103,10 +104,11 @@ export default function App() {
     {menuOpen && <button className="mobile-overlay" onClick={() => setMenuOpen(false)} aria-label="Close navigation" />}
     <main className="main-content">
       <header className="topbar"><button className="icon-button mobile-menu" onClick={() => setMenuOpen(true)} aria-label="Open menu"><Menu size={21} /></button><div className="breadcrumbs"><span>Workspace</span><span>/</span><strong>{activePage.label}</strong></div><div className="topbar-actions"><div className="connection"><span className="status-dot" />{data.source === 'neon' ? 'Connected to StockInventorySystem' : 'Demo mode'}</div><button className="icon-button"><CircleHelp size={19} /></button><button className="icon-button" onClick={() => { signOutAdmin(); setAdminReady(false); setData(null) }} aria-label="Sign out"><LogOut size={17} /></button><div className="top-avatar">AM</div></div></header>
-      <div className="page-wrap"><div className="page-heading"><div><p className="eyebrow">{activePage.id === 'overview' ? 'Saturday, September 5, 2026' : 'Workspace management'}</p><h1>{activePage.label}</h1></div><div className="heading-actions">{page === 'overview' && <button className="button button-primary" onClick={() => handlePage('sessions')}><Plus size={17} />New count session</button>}{page === 'inventory' && <><button className="button button-secondary" onClick={() => setDialog('import')}><Download size={17} />Import Excel</button><button className="button button-primary" onClick={handlePrimaryAction}><Plus size={17} />Add item</button></>}{page === 'team' && <button className="button button-primary" onClick={handlePrimaryAction}><Plus size={17} />Invite teammate</button>}{page === 'sessions' && !selectedSession && <button className="button button-primary" onClick={handlePrimaryAction}><Plus size={17} />Schedule count</button>}{page === 'sessions' && selectedSession && <button className="button button-secondary" onClick={() => setSelectedSession(null)}><ChevronDown size={17} style={{ transform: 'rotate(90deg)' }} />Back to sessions</button>}{page === 'sales' && <button className="button button-secondary" onClick={refresh}><RefreshCw size={17} />Refresh sales</button>}</div></div>
+      <div className="page-wrap"><div className="page-heading"><div><p className="eyebrow">{activePage.id === 'overview' ? 'Saturday, September 5, 2026' : 'Workspace management'}</p><h1>{activePage.label}</h1></div><div className="heading-actions">{page === 'overview' && <button className="button button-primary" onClick={() => handlePage('sessions')}><Plus size={17} />New count session</button>}{page === 'inventory' && <><button className="button button-secondary" onClick={() => setDialog('import')}><Download size={17} />Import Excel</button><button className="button button-primary" onClick={handlePrimaryAction}><Plus size={17} />Add item</button></>}{page === 'team' && <button className="button button-primary" onClick={handlePrimaryAction}><Plus size={17} />Invite teammate</button>}{page === 'sessions' && !selectedSession && <button className="button button-primary" onClick={handlePrimaryAction}><Plus size={17} />Schedule count</button>}{page === 'sessions' && selectedSession && <button className="button button-secondary" onClick={() => setSelectedSession(null)}><ChevronDown size={17} style={{ transform: 'rotate(90deg)' }} />Back to sessions</button>}{page === 'sales' && <button className="button button-secondary" onClick={refresh}><RefreshCw size={17} />Refresh sales</button>}{page === 'credits' && <button className="button button-primary" onClick={handlePrimaryAction}><Plus size={17} />Record credit</button>}</div></div>
         {notice && <div className="notice"><Cloud size={16} />{notice}<button onClick={() => setNotice('')}><X size={15} /></button></div>}
         {page === 'overview' && <Overview data={data} onNavigate={handlePage} />}
         {page === 'sales' && <SalesPage data={data} />}
+        {page === 'credits' && <CreditsPage data={data} setData={setData} onNotice={setNotice} />}
         {page === 'inventory' && <Inventory data={data} query={query} setQuery={setQuery} onEdit={item => { setEditingItem(item); setDialog('edit-item') }} onDelete={async item => { if (!window.confirm('Delete this product from the catalogue? This cannot be undone.')) return; try { await deleteItem(item.id); setData({ ...data, items: data.items.filter(i => i.id !== item.id) }); setNotice('Product deleted. Sales history is preserved.') } catch (err) { setNotice(err instanceof Error ? err.message : 'Failed to delete product') } }} />}
         {page === 'sessions' && !selectedSession && <Sessions data={data} query={query} setQuery={setQuery} onSelect={setSelectedSession} onDelete={async (id) => { try { await deleteSession(id); setData({ ...data, sessions: data.sessions.filter(s => s.id !== id) }); setNotice('Session deleted.') } catch (err) { setNotice(err instanceof Error ? err.message : 'Failed to delete session') } }} />}
         {page === 'sessions' && selectedSession && <SessionDetail sessionId={selectedSession} data={data} setData={setData} onBack={() => setSelectedSession(null)} onNotice={setNotice} />}
@@ -122,6 +124,7 @@ export default function App() {
     {dialog === 'edit-item' && editingItem && <ItemDialog data={data} item={editingItem} onClose={() => { setDialog(null); setEditingItem(null) }} onUpdated={item => { setData({ ...data, items: data.items.map(i => i.id === item.id ? item : i) }); setDialog(null); setEditingItem(null); setNotice('Product updated in the shared catalogue.') }} />}
     {dialog === 'import' && <ImportDialog data={data} onClose={() => setDialog(null)} onCreated={items => { setData({ ...data, items: [...items, ...data.items] }); setDialog(null); setNotice(`${items.length} products imported into the shared catalogue.`) }} />}
     {dialog === 'schedule' && <ScheduleDialog data={data} onClose={() => setDialog(null)} onCreated={sessions => { setData({ ...data, sessions: [...sessions, ...data.sessions] }); setDialog(null); setNotice('Count session scheduled. Products were allocated across the selected counters.') }} />}
+    {dialog === 'credit' && <CreditDialog data={data} onClose={() => setDialog(null)} onCreated={credit => { setData({ ...data, credits: [credit, ...(data.credits || [])] }); setDialog(null); setNotice('Credit recorded. Stock was reduced and the amount will count as sales revenue once settled.') }} />}
     {dialog === 'threshold-confirm' && <ThresholdConfirmDialog org={data.org} onYes={() => { setDialog(null); setPage('settings') }} onNo={async () => { try { await updateThresholds(data.org.id, 0, 0); setData({ ...data, org: { ...data.org, variance_threshold_pct: 0, variance_threshold_units: 0 } }); setDialog('schedule'); setNotice('Thresholds set to zero. Any difference between counted and system quantity will be flagged as variance.') } catch (err) { setNotice(err instanceof Error ? err.message : 'Failed to update thresholds') } }} onClose={() => setDialog(null)} />}
   </div>
 }
@@ -185,10 +188,104 @@ function SalesPage({ data }: { data: AdminData }) {
     {!loading && !error && days.length === 0 && <section className="panel" style={{ padding: '2.5rem', textAlign: 'center' }}><ShoppingCart size={28} style={{ margin: '0 auto 0.75rem', opacity: 0.4 }} /><h3>No sales recorded yet</h3><p className="muted">When your sellers record sales in the mobile app, receipts will appear here grouped by day.</p></section>}
     {days.map(day => <section className="panel table-panel" key={day.date}>
       <div className="table-toolbar"><div><p className="panel-kicker">{new Date(day.date + 'T00:00:00').toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' })}</p><h3>{day.date}</h3></div><div className="session-summary">{day.total_sales} sales Â· {day.items_sold} items Â· <strong>{day.total_revenue.toLocaleString()}</strong></div></div>
-      <div className="table-scroll"><table><thead><tr><th>Product</th><th>SKU</th><th>Qty</th><th>Unit price</th><th>Total</th><th>Seller</th><th>Time</th></tr></thead><tbody>{day.sales.map(sale => <tr key={sale.id}><td><strong>{sale.item_name || 'Unknown product'}</strong></td><td><code>{sale.sku || 'â€”'}</code></td><td>{sale.quantity} {sale.item_unit || ''}</td><td>{Number(sale.unit_price).toLocaleString()}</td><td style={{ fontWeight: 600 }}>{Number(sale.total).toLocaleString()}</td><td><div className="person-cell"><div className="avatar avatar-small">{initials(sale.seller_name || '?')}</div>{sale.seller_name || 'Unknown'}</div></td><td className="muted">{new Date(sale.sold_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</td></tr>)}</tbody></table></div>
+      <div className="table-scroll"><table><thead><tr><th>Product</th><th>SKU</th><th>Qty</th><th>Unit price</th><th>Discount</th><th>Total</th><th>Seller</th><th>Time</th></tr></thead><tbody>{day.sales.map(sale => <tr key={sale.id}><td><strong>{sale.item_name || 'Unknown product'}</strong>{sale.credit_id ? <small className="table-sub">Credit settlement</small> : null}</td><td><code>{sale.sku || 'â€”'}</code></td><td>{sale.quantity} {sale.item_unit || ''}</td><td>{Number(sale.unit_price).toLocaleString()}</td><td style={{ color: Number(sale.discount || 0) > 0 ? '#b45309' : undefined }}>{Number(sale.discount || 0) > 0 ? `-${Number(sale.discount).toLocaleString()}` : '—'}</td><td style={{ fontWeight: 600 }}>{Number(sale.total).toLocaleString()}</td><td><div className="person-cell"><div className="avatar avatar-small">{initials(sale.seller_name || '?')}</div>{sale.seller_name || 'Unknown'}</div></td><td className="muted">{new Date(sale.sold_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</td></tr>)}</tbody></table></div>
     </section>)}
   </div>
 }
+function CreditsPage({ data, setData, onNotice }: { data: AdminData; setData: (data: AdminData) => void; onNotice: (msg: string) => void }) {
+  const credits = data.credits || []
+  const outstanding = credits.filter(credit => credit.status === 'outstanding')
+  const settled = credits.filter(credit => credit.status === 'settled')
+  const outstandingTotal = outstanding.reduce((sum, credit) => sum + Number(credit.amount || 0), 0)
+  const settledTotal = settled.reduce((sum, credit) => sum + Number(credit.amount || 0), 0)
+  const [busyId, setBusyId] = useState<string | null>(null)
+  const settle = async (credit: Credit) => {
+    setBusyId(credit.id)
+    try {
+      const result = await settleCredit(credit.id)
+      setData({ ...data, credits: (data.credits || []).map(c => c.id === result.credit.id ? { ...c, ...result.credit } : c), sales: [result.sale, ...(data.sales || [])] })
+      onNotice(`Credit for ${credit.customer_name} settled. ${Number(credit.amount).toLocaleString()} was added to sales revenue.`)
+    } catch (err) {
+      onNotice(err instanceof Error ? err.message : 'Unable to settle credit')
+    } finally {
+      setBusyId(null)
+    }
+  }
+  return <div className="content-stack">
+    <section className="stat-grid">
+      <StatCard label="Outstanding credit" value={outstandingTotal.toLocaleString()} detail={`${outstanding.length} unpaid credit${outstanding.length === 1 ? '' : 's'}`} icon={Banknote} tone="yellow" />
+      <StatCard label="Settled credit" value={settledTotal.toLocaleString()} detail={`${settled.length} settled`} icon={Check} tone="mint" />
+      <StatCard label="Recorded credits" value={credits.length.toString()} detail="All time" icon={ShoppingCart} tone="blue" />
+    </section>
+    {credits.length === 0 ? <section className="panel" style={{ padding: '2.5rem', textAlign: 'center' }}><Banknote size={28} style={{ margin: '0 auto 0.75rem', opacity: 0.4 }} /><h3>No credits recorded</h3><p className="muted">Record a credit when a buyer takes goods but pays later. Settle it to add the money to sales revenue.</p></section> : <section className="panel table-panel">
+      <div className="table-toolbar"><div><p className="panel-kicker">Buy now, pay later</p><h3>Customer credits</h3></div><span className="result-count">{outstanding.length} outstanding</span></div>
+      <div className="table-scroll"><table><thead><tr><th>Customer</th><th>Product</th><th>Qty</th><th>Amount</th><th>Status</th><th>Recorded</th><th style={{ width: '130px' }} /></tr></thead><tbody>
+        {credits.map(credit => {
+          const isSettled = credit.status === 'settled'
+          return <tr key={credit.id}>
+            <td><div className="person-cell"><div className="avatar avatar-small">{initials(credit.customer_name || '?')}</div><span><strong>{credit.customer_name}</strong>{credit.customer_contact ? <small className="table-sub">{credit.customer_contact}</small> : null}</span></div></td>
+            <td>{credit.item_name || 'General credit'}</td>
+            <td>{Number(credit.quantity).toLocaleString()}</td>
+            <td style={{ fontWeight: 600 }}>{Number(credit.amount).toLocaleString()}</td>
+            <td><span style={{ display: 'inline-block', padding: '0.2rem 0.55rem', borderRadius: 999, fontSize: '0.75rem', fontWeight: 600, background: isSettled ? '#dcfce7' : '#fef3c7', color: isSettled ? '#166534' : '#92400e' }}>{isSettled ? 'Settled' : 'Outstanding'}</span></td>
+            <td className="muted">{formatDate(credit.created_at)}</td>
+            <td>{isSettled ? <span className="muted">{credit.settled_at ? `Settled ${formatDate(credit.settled_at)}` : 'Settled'}</span> : <button className="button button-primary" disabled={busyId === credit.id} onClick={() => settle(credit)}>{busyId === credit.id ? 'Settling...' : 'Settled'}</button>}</td>
+          </tr>
+        })}
+      </tbody></table></div>
+    </section>}
+  </div>
+}
+
+function CreditDialog({ data, onClose, onCreated }: { data: AdminData; onClose: () => void; onCreated: (credit: Credit) => void }) {
+  const [customerName, setCustomerName] = useState('')
+  const [customerContact, setCustomerContact] = useState('')
+  const [itemId, setItemId] = useState('')
+  const [quantity, setQuantity] = useState('1')
+  const [amount, setAmount] = useState('')
+  const [notes, setNotes] = useState('')
+  const [error, setError] = useState('')
+  const [busy, setBusy] = useState(false)
+  const selectedItem = data.items.find(item => item.id === itemId)
+  const qty = Math.max(1, Number(quantity) || 1)
+  const suggested = selectedItem ? Number(selectedItem.selling_price || 0) * qty : 0
+  const effectiveAmount = amount !== '' ? Number(amount) || 0 : suggested
+  const submit = async (event: FormEvent) => {
+    event.preventDefault()
+    setBusy(true)
+    setError('')
+    try {
+      const credit = await createCredit({
+        customer_name: customerName,
+        customer_contact: customerContact || undefined,
+        item_id: itemId || undefined,
+        quantity: qty,
+        unit_price: selectedItem ? Number(selectedItem.selling_price || 0) : undefined,
+        amount: effectiveAmount,
+        notes: notes || undefined,
+      })
+      onCreated(credit)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Unable to record credit')
+    } finally {
+      setBusy(false)
+    }
+  }
+  return <Dialog title="Record a credit" description="Record goods a buyer took but has not paid for yet. The amount is added to sales revenue only when you mark it settled." onClose={onClose}>
+    <form className="dialog-form" onSubmit={submit}>
+      <label>Customer name<input value={customerName} onChange={event => setCustomerName(event.target.value)} required placeholder="Tendai Ncube" autoFocus /></label>
+      <label>Customer phone or email (optional)<input value={customerContact} onChange={event => setCustomerContact(event.target.value)} placeholder="+263 77 123 4567" /></label>
+      <label>Product (optional)<select value={itemId} onChange={event => setItemId(event.target.value)}><option value="">General credit (no product)</option>{data.items.map(item => <option key={item.id} value={item.id}>{item.name} — {Number(item.system_qty)} {item.unit} in stock</option>)}</select></label>
+      <label>Quantity<input type="number" min="1" max={selectedItem ? Math.max(1, Number(selectedItem.system_qty)) : undefined} value={quantity} onChange={event => setQuantity(event.target.value)} required /></label>
+      <label>Credit amount<input type="number" min="0" step="0.01" value={amount} onChange={event => setAmount(event.target.value)} placeholder={suggested ? suggested.toFixed(2) : '0.00'} /><small className="muted">{selectedItem ? `Leave blank to use the product total (${suggested.toLocaleString()}).` : 'Enter the total amount the buyer owes.'}</small></label>
+      <label>Notes (optional)<textarea value={notes} onChange={event => setNotes(event.target.value)} placeholder="Agreed to pay at the end of the month." style={{ minHeight: '70px' }} /></label>
+      {selectedItem && <p className="muted" style={{ fontSize: '0.85rem' }}>Recording this credit will reduce stock by {qty} {selectedItem.unit}{qty === 1 ? '' : 's'}.</p>}
+      {error && <div className="auth-error">{error}</div>}
+      <div className="dialog-actions"><button type="button" className="button button-quiet" onClick={onClose}>Cancel</button><button className="button button-primary" disabled={busy || !customerName.trim() || effectiveAmount <= 0}>{busy ? 'Recording...' : 'Record credit'}</button></div>
+    </form>
+  </Dialog>
+}
+
 function SessionRow({ session, data }: { session: AdminData['sessions'][number]; data: AdminData }) { return <div className="session-row"><div className="session-symbol"><ClipboardList size={17} /></div><div className="session-main"><strong>{session.name}</strong><span>{locationName(session.location_id, data)} Â· {zoneName(session.zone_id, data)}</span></div><div className={`status-pill status-${session.status}`}><span />{statusLabels[session.status]}</div><div className="session-owner"><div className="avatar avatar-small">{initials(displayName(session.assigned_counter_id, data))}</div><span>{displayName(session.assigned_counter_id, data).split(' ')[0]}</span></div><span className="row-date">{formatDate(session.created_at)}</span></div> }
 
 function Inventory({ data, query, setQuery, onEdit, onDelete }: { data: AdminData; query: string; setQuery: (value: string) => void; onEdit: (item: AdminData['items'][number]) => void; onDelete: (item: AdminData['items'][number]) => void }) {

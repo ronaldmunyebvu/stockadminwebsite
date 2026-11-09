@@ -47,6 +47,7 @@ export const demoData: AdminData = {
     { id: 'l3', org_id: 'org-1', entity_type: 'user', entity_id: 'u5', action: 'deactivated', actor_id: 'u1', created_at: daysAgo(2) },
     { id: 'l4', org_id: 'org-1', entity_type: 'session', entity_id: 's1', action: 'submitted', actor_id: 'u2', created_at: daysAgo(0) },
   ],
+  credits: [],
   sales: [
     { id: 'sale-1', org_id: 'org-1', item_id: 'i6', seller_id: 'u6', quantity: 4, unit_price: 3, total: 12, sold_at: `${today.toISOString().slice(0, 10)}T09:12:00.000Z`, created_at: daysAgo(0), item_name: 'Crisp & Co. Potato Chips', sku: 'CC-CHIPS', item_unit: 'packet', seller_name: 'Tariro Mbira' },
     { id: 'sale-2', org_id: 'org-1', item_id: 'i7', seller_id: 'u7', quantity: 2, unit_price: 5, total: 10, sold_at: `${today.toISOString().slice(0, 10)}T10:03:00.000Z`, created_at: daysAgo(0), item_name: 'Bright Cola 500ml', sku: 'BC-500', item_unit: 'bottle', seller_name: 'Tariro Mbira' },

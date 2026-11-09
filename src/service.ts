@@ -1,5 +1,5 @@
 ﻿import { demoData } from './data'
-import type { AdminData, CountEntry, CountReport, CountSession, Item, Location, PlanType, SalesSummary, Subscription, User, Zone } from './types'
+import type { AdminData, CountEntry, CountReport, CountSession, Credit, Item, Location, PlanType, Sale, SalesSummary, Subscription, User, Zone } from './types'
 
 const configuredUrl = (import.meta.env.VITE_API_URL as string | undefined)?.trim().replace(/\/+$/, '').replace(/\/api$/, '')
 const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]', '::1'])
@@ -118,3 +118,6 @@ export async function recountSession(sessionId: string, counterId?: string) { re
 export async function submitReport(sessionId: string, data: { summary?: string; report_type?: string }): Promise<CountReport> { return request<CountReport>(`/api/admin/sessions/${sessionId}/report`, { method: 'POST', body: JSON.stringify(data) }) }
 export async function getSessionReport(sessionId: string): Promise<CountReport | null> { return request<CountReport | null>(`/api/admin/sessions/${sessionId}/report`) }
 export async function getSales(from?: string, to?: string): Promise<SalesSummary> { const params = new URLSearchParams(); if (from) params.set('from', from); if (to) params.set('to', to); return request<SalesSummary>(`/api/admin/sales?${params}`) }
+export async function getCredits(): Promise<Credit[]> { return apiUrl ? request<Credit[]>('/api/admin/credits') : [] }
+export async function createCredit(input: { customer_name: string; customer_contact?: string; item_id?: string; quantity: number; unit_price?: number; amount: number; notes?: string }): Promise<Credit> { if (!apiUrl) throw new Error('Credits require the ClickCount API'); return request<Credit>('/api/admin/credits', { method: 'POST', body: JSON.stringify(input) }) }
+export async function settleCredit(id: string): Promise<{ credit: Credit; sale: Sale }> { return request<{ credit: Credit; sale: Sale }>(`/api/admin/credits/${id}/settle`, { method: 'POST' }) }
